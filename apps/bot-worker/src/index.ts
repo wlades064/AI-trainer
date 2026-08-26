@@ -31,6 +31,15 @@ import {
   pendingPostWorkoutQuestion,
   startPostWorkoutCheckin,
 } from "./post-workout-checkin-db.ts";
+import {
+  answerReadinessConversation,
+  cancelReadinessConversation,
+  compactReadiness,
+  loadReadinessForDate,
+  pendingReadinessQuestion,
+  startReadinessConversation,
+} from "./pre-workout-readiness-db.ts";
+import { evaluateReadiness } from "./domain/safety.ts";
 
 interface Env {
   DB: D1Database;
@@ -74,6 +83,14 @@ async function workoutReply(offset: 0 | 1, env: Env, telegramUserId: string): Pr
   if (training.focus === "rest") {
     return `${training.date}: по базовому расписанию день восстановления.`;
   }
+  const readiness = offset === 0 ? await loadReadinessForDate(env.DB, user.id, training.date) : null;
+  if (offset === 0 && !readiness) return startReadinessConversation(env.DB, user.id, training.date);
+  if (readiness) {
+    const decision = evaluateReadiness(readiness);
+    if (!decision.allowed) {
+      return `${training.date}: тренировку не составляю: ${decision.reasons.join(", ")}. При резком или необычном ухудшении состояния обратись за медицинской помощью.`;
+    }
+  }
   const existing = await loadExistingGeneratedPlan(env.DB, user.id, training.date, training.focus);
   if (existing) return formatWorkout(training.date, existing, true);
 
@@ -100,7 +117,11 @@ async function workoutReply(offset: 0 | 1, env: Env, telegramUserId: string): Pr
       exercises: safe.allowed,
       restrictions,
       recentSummary,
-      selectionGuidance: [...GUIDANCE[training.focus], ...programmingRules(training.focus, emphasis)],
+      selectionGuidance: [
+        ...GUIDANCE[training.focus],
+        ...programmingRules(training.focus, emphasis),
+        ...(readiness ? [`Актуальный предтренировочный чекин: ${compactReadiness(readiness)}.`] : []),
+      ],
     });
     await saveGeneratedPlan(
       env.DB,
@@ -171,6 +192,14 @@ async function freeTextReply(update: TelegramUpdate, env: Env, telegramUserId: s
   const user = await ensureUser(env.DB, telegramUserId, env.APP_TIMEZONE || "Europe/Samara");
   const checkinReply = await answerPostWorkoutCheckin(env.DB, user.id, text);
   if (checkinReply !== null) return checkinReply;
+  const readinessReply = await answerReadinessConversation(env.DB, user.id, text);
+  if (readinessReply !== null) {
+    if (readinessReply.completed && readinessReply.allowed) {
+      const workout = await workoutReply(0, env, telegramUserId);
+      return `${readinessReply.reply}\n\n${workout}`;
+    }
+    return readinessReply.reply;
+  }
   return reportReply(update, env, telegramUserId, text);
 }
 
@@ -183,7 +212,7 @@ async function handleUpdate(update: TelegramUpdate, env: Env): Promise<Response>
   const offset = requestedDayOffset(text);
   let reply: string;
   if (text === "/start" || text === "/help") {
-    reply = "Команды: /today — тренировка на сегодня, /tomorrow — на завтра, /confirm — подтвердить распознанный отчёт, /checkin — продолжить послетренировочный чекин, /cancel — отменить текущий черновик или чекин. После тренировки можно прислать фактические подходы обычным сообщением.";
+    reply = "Команды: /today — чекин и тренировка на сегодня, /tomorrow — тренировка на завтра, /ready — продолжить предтренировочный чекин, /confirm — подтвердить отчёт, /checkin — продолжить послетренировочный чекин, /cancel — отменить текущий черновик или чекин.";
   } else if (text === "/confirm") {
     const user = await ensureUser(env.DB, String(message.from.id), env.APP_TIMEZONE || "Europe/Samara");
     try {
@@ -207,14 +236,27 @@ async function handleUpdate(update: TelegramUpdate, env: Env): Promise<Response>
     const user = await ensureUser(env.DB, String(message.from.id), env.APP_TIMEZONE || "Europe/Samara");
     if (await cancelPostWorkoutCheckin(env.DB, user.id)) {
       reply = "Послетренировочный чекин отменён. Сама подтверждённая тренировка осталась в истории.";
+    } else if (await cancelReadinessConversation(env.DB, user.id)) {
+      reply = "Предтренировочный чекин отменён. Тренировка не составлялась.";
     } else {
       reply = await cancelPendingReportDraft(env.DB, user.id) ? "Черновик тренировки отменён." : "Нет ожидающего подтверждения черновика или чекина.";
     }
   } else if (text === "/checkin") {
     const user = await ensureUser(env.DB, String(message.from.id), env.APP_TIMEZONE || "Europe/Samara");
     reply = await pendingPostWorkoutQuestion(env.DB, user.id) ?? "Нет незавершённого послетренировочного чекина.";
+  } else if (text === "/ready") {
+    const user = await ensureUser(env.DB, String(message.from.id), env.APP_TIMEZONE || "Europe/Samara");
+    reply = await pendingReadinessQuestion(env.DB, user.id) ?? "Нет незавершённого предтренировочного чекина. Начать его можно командой /today.";
   } else if (offset !== null) {
-    reply = await workoutReply(offset, env, String(message.from.id));
+    if (offset === 0) {
+      const user = await ensureUser(env.DB, String(message.from.id), env.APP_TIMEZONE || "Europe/Samara");
+      const pendingPostWorkout = await pendingPostWorkoutQuestion(env.DB, user.id);
+      reply = pendingPostWorkout
+        ? `Сначала закончи послетренировочный чекин или отмени его командой /cancel.\n\n${pendingPostWorkout}`
+        : await workoutReply(offset, env, String(message.from.id));
+    } else {
+      reply = await workoutReply(offset, env, String(message.from.id));
+    }
   } else {
     reply = await freeTextReply(update, env, String(message.from.id), text);
   }
