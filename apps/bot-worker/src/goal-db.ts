@@ -1,5 +1,6 @@
 import type { D1Database } from "./db.ts";
 import { GOAL_LABELS, type GoalType } from "./goal.ts";
+import { compactSupplements } from "./supplements-db.ts";
 
 interface GoalRow { id: number; goal_type: GoalType; description: string | null; starts_on: string }
 
@@ -21,6 +22,7 @@ export async function setCurrentGoal(db: D1Database, userId: number, goalType: G
 }
 
 export async function loadCompactCoachingContext(db: D1Database, userId: number): Promise<string> {
+  const supplements = await compactSupplements(db, userId);
   const goal = await loadCurrentGoal(db, userId);
   const nutrition = await db.prepare(`SELECT calories_kcal,protein_g,fat_g,carbohydrate_g FROM nutrition_days
     WHERE user_id=? AND calories_kcal IS NOT NULL ORDER BY local_date DESC LIMIT 7`).bind(userId)
@@ -36,5 +38,6 @@ export async function loadCompactCoachingContext(db: D1Database, userId: number)
   const weight=weights.results??[];
   if(weight.length) lines.push(`вес: ${weight[0].value} кг${weight[1] ? `, изменение к предыдущему замеру ${Math.round((weight[0].value-weight[1].value)*10)/10} кг` : ""}`);
   else lines.push("вес: данных пока нет");
+  lines.push(`активные добавки: ${supplements}`);
   return lines.join("; ");
 }

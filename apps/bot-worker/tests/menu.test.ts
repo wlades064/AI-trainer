@@ -9,7 +9,7 @@ test("menu buttons map to existing commands", () => {
 });
 
 test("main menu stays compact and persistent", () => {
-  assert.equal(MAIN_MENU_MARKUP.keyboard.length, 4);
+  assert.equal(MAIN_MENU_MARKUP.keyboard.length, 5);
   assert.equal(MAIN_MENU_MARKUP.is_persistent, true);
-  assert.ok(MAIN_MENU_MARKUP.keyboard.every((row) => row.length === 2));
+  assert.ok(MAIN_MENU_MARKUP.keyboard.every((row) => row.length >= 1 && row.length <= 2));
 });

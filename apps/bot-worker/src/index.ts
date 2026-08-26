@@ -48,6 +48,8 @@ import { answerMeasurementConversation, cancelMeasurementConversation, progressS
 import { goalHelp, GOAL_LABELS, parseGoalCommand } from "./goal.ts";
 import { loadCompactCoachingContext, loadCurrentGoal, setCurrentGoal } from "./goal-db.ts";
 import { commandFromMenuText, MAIN_MENU_MARKUP } from "./menu.ts";
+import { parseStopSupplementCommand, parseSupplementCommand, SUPPLEMENT_HELP } from "./supplements.ts";
+import { addSupplement, listSupplements, stopSupplement } from "./supplements-db.ts";
 
 interface Env {
   DB: D1Database;
@@ -130,6 +132,7 @@ async function workoutReply(offset: 0 | 1, env: Env, telegramUserId: string): Pr
         ...GUIDANCE[training.focus],
         ...programmingRules(training.focus, emphasis),
         `Контекст цели и восстановления ресурсов: ${coachingContext}. Не компенсируй питание чрезмерным тренировочным объёмом.`,
+        "Добавки перечислены только как фактический контекст. Не назначай, не отменяй и не меняй их дозировку; не делай медицинских выводов.",
         ...(readiness ? [`Актуальный предтренировочный чекин: ${compactReadiness(readiness)}.`] : []),
       ],
     });
@@ -330,6 +333,13 @@ async function handleUpdate(update: TelegramUpdate, env: Env): Promise<Response>
     }
   } else if (text === "/nutrition") {
     reply = "Пришли один скриншот дневного итога FatSecret и добавь к фотографии подпись /nutrition. Без подписи изображение не отправится в Gemini.";
+  } else if (text === "/supplements") {
+    const user=await ensureUser(env.DB,String(message.from.id),env.APP_TIMEZONE||"Europe/Samara");const rows=await listSupplements(env.DB,user.id);
+    reply=`${rows.length?["Активные добавки:",...rows.map((r)=>`${r.id}. ${r.name} — ${r.dose_value} ${r.dose_unit}, ${r.schedule_text}`)].join("\n"):"Активные добавки не записаны."}\n\n${SUPPLEMENT_HELP}`;
+  } else if (/^\/supplement_stop(?:@\w+)?(?:\s|$)/i.test(text)) {
+    const id=parseStopSupplementCommand(text);if(id===null)reply=`Неверный формат. ${SUPPLEMENT_HELP}`;else{const user=await ensureUser(env.DB,String(message.from.id),env.APP_TIMEZONE||"Europe/Samara");const today=toIsoDate(localDateAt(new Date(),env.APP_TIMEZONE||"Europe/Samara"));reply=await stopSupplement(env.DB,user.id,id,today)?"Добавка остановлена; история сохранена.":"Активная добавка с таким номером не найдена.";}
+  } else if (/^\/supplement(?:@\w+)?(?:\s|$)/i.test(text)) {
+    const input=parseSupplementCommand(text);if(!input)reply=`Неверный формат. ${SUPPLEMENT_HELP}`;else{const user=await ensureUser(env.DB,String(message.from.id),env.APP_TIMEZONE||"Europe/Samara");const today=toIsoDate(localDateAt(new Date(),env.APP_TIMEZONE||"Europe/Samara"));await addSupplement(env.DB,user.id,input,today);reply=`Сохранено: ${input.name} — ${input.doseValue} ${input.doseUnit}, ${input.schedule}. Я фиксирую факт приёма, но не меняю назначения и дозировки.`;}
   } else if (offset !== null) {
     if (offset === 0) {
       const user = await ensureUser(env.DB, String(message.from.id), env.APP_TIMEZONE || "Europe/Samara");
