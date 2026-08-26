@@ -52,6 +52,8 @@ import { parseStopSupplementCommand, parseSupplementCommand, SUPPLEMENT_HELP } f
 import { addSupplement, listSupplements, stopSupplement } from "./supplements-db.ts";
 import { LAB_HELP, parseCancelLabCommand, parseLabCommand } from "./labs.ts";
 import { addLabResult, cancelLabResult, listLabResults } from "./labs-db.ts";
+import { formatLabImageDraft, parseLabScreenshot } from "./lab-image.ts";
+import { cancelLabImageDraft, confirmLabImageDraft, findLabImage, pendingLabImageDraft, saveLabImageDraft } from "./lab-image-db.ts";
 
 interface Env {
   DB: D1Database;
@@ -244,6 +246,8 @@ async function nutritionPhotoReply(update: TelegramUpdate, env: Env, telegramUse
   }
 }
 
+async function labPhotoReply(update:TelegramUpdate,env:Env,telegramUserId:string):Promise<string>{const message=update.message;if(!message?.photo?.length)throw new Error("Фото отсутствует");const user=await ensureUser(env.DB,telegramUserId,env.APP_TIMEZONE||"Europe/Samara");const selected=selectEfficientPhoto(message.photo);const existing=await findLabImage(env.DB,user.id,selected.file_unique_id);if(existing)return existing.status==="confirmed"?"Этот лабораторный бланк уже сохранён.":formatLabImageDraft(JSON.parse(existing.parsed_json));try{const image=await downloadTelegramPhoto(env.TELEGRAM_BOT_TOKEN,selected.file_id);const today=toIsoDate(localDateAt(new Date(),env.APP_TIMEZONE||"Europe/Samara"));const parsed=await parseLabScreenshot(env.GEMINI_API_KEY,env.GEMINI_MODEL,image,today);await saveLabImageDraft(env.DB,user.id,update.update_id,selected.file_unique_id,parsed.draft,env.GEMINI_MODEL,parsed.inputTokens,parsed.outputTokens);return formatLabImageDraft(parsed.draft)}catch(error){await env.DB.prepare("INSERT INTO system_events(event_type,payload_json)VALUES('lab_screenshot_failed',?)").bind(JSON.stringify({error:error instanceof Error?error.message:"unknown"})).run();return"Не смог надёжно прочитать бланк. Ничего не сохранено. Пришли одно чёткое фото с подписью /labphoto."}}
+
 async function handleUpdate(update: TelegramUpdate, env: Env): Promise<Response> {
   const message = update.message;
   if (!message?.from || (!message.text && !message.caption && !message.photo?.length)) return new Response("ok");
@@ -255,9 +259,9 @@ async function handleUpdate(update: TelegramUpdate, env: Env): Promise<Response>
   let reply: string;
   let showMenu = false;
   if (message.photo?.length) {
-    reply = /^\/nutrition(?:@\w+)?$/i.test(text)
-      ? await nutritionPhotoReply(update, env, String(message.from.id))
-      : "Для аварийного импорта общего дневного КБЖУ пришли скриншот FatSecret с подписью /nutrition. Без этой подписи фото не отправляется в Gemini.";
+    if(/^\/nutrition(?:@\w+)?$/i.test(text))reply=await nutritionPhotoReply(update,env,String(message.from.id));
+    else if(/^\/labphoto(?:@\w+)?$/i.test(text))reply=await labPhotoReply(update,env,String(message.from.id));
+    else reply="Фото обрабатывается только с явной подписью: /nutrition для КБЖУ или /labphoto для лабораторного бланка. Без подписи фото не отправляется в Gemini.";
   } else if (text === "/start" || text === "/help" || text === "/menu") {
     showMenu = true;
     reply = "Команды: /today — тренировка на сегодня, /tomorrow — на завтра, /goal — текущая цель, /confirm — подтвердить отчёт или КБЖУ, /nutrition — подпись к скриншоту FatSecret, /weight 87.5 — аварийная запись веса, /measure — месячные замеры, /progress — динамика, /cancel — отмена текущего диалога.";
@@ -265,9 +269,11 @@ async function handleUpdate(update: TelegramUpdate, env: Env): Promise<Response>
     const user = await ensureUser(env.DB, String(message.from.id), env.APP_TIMEZONE || "Europe/Samara");
     const workoutDraft = await loadPendingReportDraft(env.DB, user.id);
     const nutritionDraft = workoutDraft ? null : await loadPendingNutritionDraft(env.DB, user.id);
+    const labDraft = workoutDraft||nutritionDraft?null:await pendingLabImageDraft(env.DB,user.id);
     if (nutritionDraft) {
       const confirmed = await confirmNutritionDraft(env.DB, user.id);
       reply = `${confirmed.date}: общий КБЖУ подтверждён и сохранён в истории питания.`;
+    } else if(labDraft){const confirmed=await confirmLabImageDraft(env.DB,user.id);reply=`${confirmed.date}: подтверждено и сохранено показателей: ${confirmed.items.length}. Медицинская интерпретация не выполнялась.`;
     } else try {
       const confirmed = await confirmPendingReportDraft(env.DB, user.id);
       try {
@@ -293,6 +299,8 @@ async function handleUpdate(update: TelegramUpdate, env: Env): Promise<Response>
       reply = "Предтренировочный чекин отменён. Тренировка не составлялась.";
     } else if (await cancelNutritionDraft(env.DB, user.id)) {
       reply = "Черновик КБЖУ отменён. В историю питания ничего не записано.";
+    } else if(await cancelLabImageDraft(env.DB,user.id)){
+      reply="Черновик анализов отменён. Показатели не сохранены.";
     } else if (await cancelMeasurementConversation(env.DB, user.id)) {
       reply = "Ввод замеров отменён. Незавершённые значения не сохранены.";
     } else {
@@ -344,7 +352,7 @@ async function handleUpdate(update: TelegramUpdate, env: Env): Promise<Response>
     const input=parseSupplementCommand(text);if(!input)reply=`Неверный формат. ${SUPPLEMENT_HELP}`;else{const user=await ensureUser(env.DB,String(message.from.id),env.APP_TIMEZONE||"Europe/Samara");const today=toIsoDate(localDateAt(new Date(),env.APP_TIMEZONE||"Europe/Samara"));await addSupplement(env.DB,user.id,input,today);reply=`Сохранено: ${input.name} — ${input.doseValue} ${input.doseUnit}, ${input.schedule}. Я фиксирую факт приёма, но не меняю назначения и дозировки.`;}
   } else if (text === "/labs") {
     const user=await ensureUser(env.DB,String(message.from.id),env.APP_TIMEZONE||"Europe/Samara");const rows=await listLabResults(env.DB,user.id);
-    reply=`${rows.length?["Последние анализы:",...rows.map((r)=>`${r.id}. ${r.collected_on} — ${r.marker_name}: ${r.value_text} ${r.unit} (референс ${r.reference_text})`)].join("\n"):"Анализы пока не записаны."}\n\n${LAB_HELP}\n\nБот хранит данные, но не ставит диагноз и не меняет назначения.`;
+    reply=`${rows.length?["Последние анализы:",...rows.map((r)=>`${r.id}. ${r.collected_on} — ${r.marker_name}: ${r.value_text} ${r.unit} (референс ${r.reference_text})`)].join("\n"):"Анализы пока не записаны."}\n\nФото бланка: добавь к фотографии подпись /labphoto.\n${LAB_HELP}\n\nБот хранит данные, но не ставит диагноз и не меняет назначения.`;
   } else if (/^\/lab_cancel(?:@\w+)?(?:\s|$)/i.test(text)) {
     const id=parseCancelLabCommand(text);if(id===null)reply=`Неверный формат. ${LAB_HELP}`;else{const user=await ensureUser(env.DB,String(message.from.id),env.APP_TIMEZONE||"Europe/Samara");reply=await cancelLabResult(env.DB,user.id,id)?"Ошибочная запись анализа отменена; она исключена из активного списка, история сохранена.":"Активная запись с таким номером не найдена.";}
   } else if (/^\/lab(?:@\w+)?(?:\s|$)/i.test(text)) {
