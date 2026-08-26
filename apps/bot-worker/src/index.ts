@@ -60,6 +60,7 @@ import { compactStrengthContext, strengthProgressSummary } from "./strength-anal
 import { answerInjuryConversation, cancelInjuryConversation, startInjuryConversation } from "./injuries-db.ts";
 import { answerReintroductionConversation, cancelReintroductionConversation, startReintroductionConversation } from "./reintroduction-db.ts";
 import { answerExerciseCatalogConversation, cancelExerciseCatalogConversation, startExerciseCatalogConversation } from "./exercise-catalog-db.ts";
+import { answerExerciseAddConversation, cancelExerciseAddConversation } from "./exercise-add-db.ts";
 
 interface Env {
   DB: D1Database;
@@ -254,6 +255,7 @@ async function freeTextReply(update: TelegramUpdate, env: Env, telegramUserId: s
   const injuryReply=await answerInjuryConversation(env.DB,user.id,text,today);if(injuryReply!==null)return injuryReply;
   const reintroductionReply=await answerReintroductionConversation(env.DB,user.id,text,today);if(reintroductionReply!==null)return reintroductionReply;
   const catalogReply=await answerExerciseCatalogConversation(env.DB,user.id,text);if(catalogReply!==null)return catalogReply;
+  const exerciseAddReply=await answerExerciseAddConversation(env.DB,user.id,text);if(exerciseAddReply!==null)return exerciseAddReply;
   return reportReply(update, env, telegramUserId, text);
 }
 
@@ -345,6 +347,8 @@ async function handleUpdate(update: TelegramUpdate, env: Env): Promise<Response>
       reply="Управление возвратом упражнений отменено. Статусы не изменены.";
     } else if(await cancelExerciseCatalogConversation(env.DB,user.id)){
       reply="Управление каталогом упражнений отменено.";
+    } else if(await cancelExerciseAddConversation(env.DB,user.id)){
+      reply="Черновик нового упражнения отменён. В каталог ничего не добавлено.";
     } else {
       reply = await cancelPendingReportDraft(env.DB, user.id) ? "Черновик тренировки отменён." : "Нет ожидающего подтверждения черновика или чекина.";
     }
@@ -366,11 +370,11 @@ async function handleUpdate(update: TelegramUpdate, env: Env): Promise<Response>
   } else if(text==="/recovery"){
     const user=await ensureUser(env.DB,String(message.from.id),env.APP_TIMEZONE||"Europe/Samara");reply=await startRecovery(env.DB,user.id);
   } else if(text==="/injuries"){
-    const user=await ensureUser(env.DB,String(message.from.id),env.APP_TIMEZONE||"Europe/Samara");await cancelReintroductionConversation(env.DB,user.id);await cancelExerciseCatalogConversation(env.DB,user.id);reply=await startInjuryConversation(env.DB,user.id);
+    const user=await ensureUser(env.DB,String(message.from.id),env.APP_TIMEZONE||"Europe/Samara");await cancelReintroductionConversation(env.DB,user.id);await cancelExerciseCatalogConversation(env.DB,user.id);await cancelExerciseAddConversation(env.DB,user.id);reply=await startInjuryConversation(env.DB,user.id);
   } else if(text==="/reintroductions"){
-    const user=await ensureUser(env.DB,String(message.from.id),env.APP_TIMEZONE||"Europe/Samara");await cancelInjuryConversation(env.DB,user.id);await cancelExerciseCatalogConversation(env.DB,user.id);reply=await startReintroductionConversation(env.DB,user.id);
+    const user=await ensureUser(env.DB,String(message.from.id),env.APP_TIMEZONE||"Europe/Samara");await cancelInjuryConversation(env.DB,user.id);await cancelExerciseCatalogConversation(env.DB,user.id);await cancelExerciseAddConversation(env.DB,user.id);reply=await startReintroductionConversation(env.DB,user.id);
   } else if(text==="/exercises"){
-    const user=await ensureUser(env.DB,String(message.from.id),env.APP_TIMEZONE||"Europe/Samara");await cancelInjuryConversation(env.DB,user.id);await cancelReintroductionConversation(env.DB,user.id);reply=await startExerciseCatalogConversation(env.DB,user.id);
+    const user=await ensureUser(env.DB,String(message.from.id),env.APP_TIMEZONE||"Europe/Samara");await cancelInjuryConversation(env.DB,user.id);await cancelReintroductionConversation(env.DB,user.id);await cancelExerciseAddConversation(env.DB,user.id);reply=await startExerciseCatalogConversation(env.DB,user.id);
   } else if (text === "/goal") {
     const user = await ensureUser(env.DB, String(message.from.id), env.APP_TIMEZONE || "Europe/Samara");
     const current = await loadCurrentGoal(env.DB, user.id);

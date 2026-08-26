@@ -1,0 +1,3 @@
+import test from"node:test";import assert from"node:assert/strict";import{parseEquipmentCategory,parseRiskTags,parseSubgroup,parseWorkoutRole}from"../src/exercise-add.ts";
+test("new exercise fields use known database values",()=>{assert.equal(parseSubgroup("legs","квадрицепс"),"quadriceps");assert.equal(parseEquipmentCategory("тренажер"),"machine");assert.equal(parseWorkoutRole("добавочное"),"accessory")});
+test("risk tags reject unknown free text",()=>{assert.deepEqual(parseRiskTags("коленная нагрузка, баланс"),["knee_load","balance"]);assert.deepEqual(parseRiskTags("нет"),[]);assert.equal(parseRiskTags("что-то опасное"),null)});
