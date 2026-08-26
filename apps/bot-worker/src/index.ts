@@ -118,9 +118,11 @@ async function workoutReply(offset: 0 | 1, env: Env, telegramUserId: string): Pr
     return `${training.date}: для группы «${training.label}» ещё не задан следующий программный акцент. План не создан, чтобы не выбирать его случайно.`;
   }
   const loadMode=await loadModeForDate(env.DB,user.id,training.date);
-  if(loadMode==="normal"&&await recoveryAssessmentDue(env.DB,user.id,training.date)){
+  const recoveryTrigger=loadMode==="normal"?await recoveryAssessmentDue(env.DB,user.id,training.date):null;
+  if(recoveryTrigger){
     const question=await startRecovery(env.DB,user.id);
-    return`Перед следующей тренировкой нужна плановая оценка восстановления: завершено минимум четыре тяжёлые недели. После чекина снова нажми «🏋️ Сегодня» или «📅 Завтра».\n\n${question}`;
+    const reason=recoveryTrigger==="performance_decline"?"зафиксировано устойчивое снижение результатов на двух последовательных сопоставимых тренировках":"завершено минимум четыре тяжёлые недели";
+    return`Перед следующей тренировкой нужна оценка восстановления: ${reason}. После чекина снова нажми «🏋️ Сегодня» или «📅 Завтра».\n\n${question}`;
   }
 
   const [candidates, restrictions, recentSummary, coachingContext,strengthContext] = await Promise.all([

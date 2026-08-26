@@ -46,3 +46,15 @@ export function strengthTrendLines(rows:StrengthSetRow[],limit=8):string[]{
     return`• ${name}: ${current.date} — ${metricText(current)}; ${previous?comparison(current,previous):"для сравнения нужна ещё одна подтверждённая тренировка с тем же типом веса"}`;
   });
 }
+
+function performanceIndex(rows:StrengthSetRow[]):number|null{
+  if(rows[0].load_basis==="bodyweight")return Math.max(...rows.map((row)=>row.reps));
+  const weighted=rows.filter((row):row is StrengthSetRow&{weight_kg:number}=>row.weight_kg!==null);if(!weighted.length)return null;
+  return Math.max(...weighted.map((row)=>row.weight_kg*(1+row.reps/30)));
+}
+
+export function consecutiveDecliningSessions(rows:StrengthSetRow[]):number{
+  const series=new Map<string,Map<string,StrengthSetRow[]>>();for(const row of rows){if(!Number.isFinite(row.reps)||row.reps<=0)continue;const key=`${row.exercise_name}|${row.load_basis}`;const dates=series.get(key)??new Map<string,StrengthSetRow[]>();const sets=dates.get(row.local_date)??[];sets.push(row);dates.set(row.local_date,sets);series.set(key,dates)}
+  const byDate=new Map<string,{declines:number;improvements:number;comparable:number}>();for(const dates of series.values()){const sessions=[...dates.entries()].sort(([a],[b])=>a.localeCompare(b));for(let index=1;index<sessions.length;index++){const previous=performanceIndex(sessions[index-1][1]);const current=performanceIndex(sessions[index][1]);if(previous===null||current===null||previous<=0)continue;const date=sessions[index][0];const signals=byDate.get(date)??{declines:0,improvements:0,comparable:0};signals.comparable+=1;const ratio=current/previous;if(ratio<=0.95)signals.declines+=1;else if(ratio>=1.05)signals.improvements+=1;byDate.set(date,signals)}}
+  const evaluated=[...byDate.entries()].filter(([,signals])=>signals.comparable>=2).sort(([a],[b])=>b.localeCompare(a));let count=0;for(const[,signals]of evaluated){if(signals.declines>=2&&signals.improvements===0)count+=1;else break}return count;
+}
