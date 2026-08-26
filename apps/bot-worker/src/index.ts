@@ -50,6 +50,8 @@ import { loadCompactCoachingContext, loadCurrentGoal, setCurrentGoal } from "./g
 import { commandFromMenuText, MAIN_MENU_MARKUP } from "./menu.ts";
 import { parseStopSupplementCommand, parseSupplementCommand, SUPPLEMENT_HELP } from "./supplements.ts";
 import { addSupplement, listSupplements, stopSupplement } from "./supplements-db.ts";
+import { LAB_HELP, parseCancelLabCommand, parseLabCommand } from "./labs.ts";
+import { addLabResult, cancelLabResult, listLabResults } from "./labs-db.ts";
 
 interface Env {
   DB: D1Database;
@@ -340,6 +342,13 @@ async function handleUpdate(update: TelegramUpdate, env: Env): Promise<Response>
     const id=parseStopSupplementCommand(text);if(id===null)reply=`Неверный формат. ${SUPPLEMENT_HELP}`;else{const user=await ensureUser(env.DB,String(message.from.id),env.APP_TIMEZONE||"Europe/Samara");const today=toIsoDate(localDateAt(new Date(),env.APP_TIMEZONE||"Europe/Samara"));reply=await stopSupplement(env.DB,user.id,id,today)?"Добавка остановлена; история сохранена.":"Активная добавка с таким номером не найдена.";}
   } else if (/^\/supplement(?:@\w+)?(?:\s|$)/i.test(text)) {
     const input=parseSupplementCommand(text);if(!input)reply=`Неверный формат. ${SUPPLEMENT_HELP}`;else{const user=await ensureUser(env.DB,String(message.from.id),env.APP_TIMEZONE||"Europe/Samara");const today=toIsoDate(localDateAt(new Date(),env.APP_TIMEZONE||"Europe/Samara"));await addSupplement(env.DB,user.id,input,today);reply=`Сохранено: ${input.name} — ${input.doseValue} ${input.doseUnit}, ${input.schedule}. Я фиксирую факт приёма, но не меняю назначения и дозировки.`;}
+  } else if (text === "/labs") {
+    const user=await ensureUser(env.DB,String(message.from.id),env.APP_TIMEZONE||"Europe/Samara");const rows=await listLabResults(env.DB,user.id);
+    reply=`${rows.length?["Последние анализы:",...rows.map((r)=>`${r.id}. ${r.collected_on} — ${r.marker_name}: ${r.value_text} ${r.unit} (референс ${r.reference_text})`)].join("\n"):"Анализы пока не записаны."}\n\n${LAB_HELP}\n\nБот хранит данные, но не ставит диагноз и не меняет назначения.`;
+  } else if (/^\/lab_cancel(?:@\w+)?(?:\s|$)/i.test(text)) {
+    const id=parseCancelLabCommand(text);if(id===null)reply=`Неверный формат. ${LAB_HELP}`;else{const user=await ensureUser(env.DB,String(message.from.id),env.APP_TIMEZONE||"Europe/Samara");reply=await cancelLabResult(env.DB,user.id,id)?"Ошибочная запись анализа отменена; она исключена из активного списка, история сохранена.":"Активная запись с таким номером не найдена.";}
+  } else if (/^\/lab(?:@\w+)?(?:\s|$)/i.test(text)) {
+    const input=parseLabCommand(text);if(!input)reply=`Неверный формат. ${LAB_HELP}`;else{const user=await ensureUser(env.DB,String(message.from.id),env.APP_TIMEZONE||"Europe/Samara");const today=toIsoDate(localDateAt(new Date(),env.APP_TIMEZONE||"Europe/Samara"));await addLabResult(env.DB,user.id,input,today);reply=`Сохранено: ${input.marker} — ${input.valueText} ${input.unit}, лабораторный референс ${input.reference}, дата ${input.date??today}. Медицинская интерпретация не выполнялась.`;}
   } else if (offset !== null) {
     if (offset === 0) {
       const user = await ensureUser(env.DB, String(message.from.id), env.APP_TIMEZONE || "Europe/Samara");
