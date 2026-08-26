@@ -1,5 +1,5 @@
 import type { D1Database } from "./db.ts";
-import { formatDelta, measurementQuestion, MEASUREMENT_KINDS, parseCentimeters, type MeasurementStep } from "./body-tracking.ts";
+import { formatDelta, measurementQuestion, MEASUREMENT_KINDS, nutritionTrendWindows, parseCentimeters, type MeasurementStep, type NutritionTrendDay } from "./body-tracking.ts";
 
 interface ConversationRow { id: number; step: MeasurementStep; values_json: string }
 
@@ -52,13 +52,13 @@ export async function saveEmergencyWeight(db: D1Database, userId: number, localD
 }
 
 interface MeasurementRow { measured_at: string; kind: string; value: number; unit: string }
-export async function progressSummary(db: D1Database, userId: number): Promise<string> {
+export async function progressSummary(db: D1Database, userId: number, localDate: string): Promise<string> {
   const measurements = await db.prepare(`SELECT measured_at, kind, value, unit FROM body_measurements
     WHERE user_id=? ORDER BY measured_at DESC LIMIT 80`).bind(userId).all<MeasurementRow>();
-  const nutrition = await db.prepare(`SELECT local_date, calories_kcal, protein_g FROM nutrition_days
-    WHERE user_id=? ORDER BY local_date DESC LIMIT 14`).bind(userId).all<{local_date:string;calories_kcal:number|null;protein_g:number|null}>();
-  const workouts = await db.prepare(`SELECT COUNT(*) AS count FROM workout_sessions
-    WHERE user_id=? AND confirmed_at IS NOT NULL AND local_date>=date('now','-28 days')`).bind(userId).first<{count:number}>();
+  const nutrition = await db.prepare(`SELECT local_date, calories_kcal, protein_g, fat_g, carbohydrate_g FROM nutrition_days
+    WHERE user_id=? AND local_date>=date(?,'-13 days') AND local_date<=? ORDER BY local_date DESC`).bind(userId,localDate,localDate).all<NutritionTrendDay>();
+  const workouts = await db.prepare(`SELECT focus,COUNT(*) AS count FROM workout_sessions
+    WHERE user_id=? AND confirmed_at IS NOT NULL AND local_date>=date(?,'-27 days') AND local_date<=? GROUP BY focus`).bind(userId,localDate,localDate).all<{focus:string|null;count:number}>();
   const byKind = new Map<string, MeasurementRow[]>();
   for (const item of measurements.results ?? []) { const list=byKind.get(item.kind)??[]; list.push(item); byKind.set(item.kind,list); }
   const lines: string[] = ["Динамика:"];
@@ -68,8 +68,17 @@ export async function progressSummary(db: D1Database, userId: number): Promise<s
     const current=list[0]; const previous=list[1];
     lines.push(`• ${label}: ${current.value} ${current.unit}${previous ? ` (${formatDelta(current.value, previous.value)} к предыдущему замеру)` : ""}`);
   }
-  const days=(nutrition.results??[]).filter((d)=>d.calories_kcal!==null);
-  if(days.length){ const kcal=Math.round(days.reduce((s,d)=>s+(d.calories_kcal??0),0)/days.length); const protein=Math.round(days.reduce((s,d)=>s+(d.protein_g??0),0)/days.length); lines.push(`• питание: в среднем ${kcal} ккал и ${protein} г белка за ${days.length} дн.`); }
-  lines.push(`• подтверждённых тренировок за 28 дней: ${workouts?.count ?? 0}`);
+  const trend=nutritionTrendWindows(nutrition.results??[],localDate);
+  if(trend.recent.days){
+    const recent=trend.recent;
+    lines.push(`• питание за 7 дней (${recent.days} записей): ${recent.caloriesKcal??"—"} ккал; Б ${recent.proteinG??"—"}, Ж ${recent.fatG??"—"}, У ${recent.carbohydrateG??"—"} г в среднем`);
+    if(trend.previous.days&&recent.caloriesKcal!==null&&trend.previous.caloriesKcal!==null){
+      const proteinDelta=recent.proteinG!==null&&trend.previous.proteinG!==null?`; белок ${formatDelta(recent.proteinG,trend.previous.proteinG)} г`:"";
+      lines.push(`  к предыдущим 7 дням (${trend.previous.days} записей): калории ${formatDelta(recent.caloriesKcal,trend.previous.caloriesKcal)} ккал${proteinDelta}`);
+    }
+  } else lines.push("• питание: за последние 7 дней подтверждённых итогов нет");
+  const workoutRows=workouts.results??[];const total=workoutRows.reduce((sum,row)=>sum+row.count,0);const focusLabels:Record<string,string>={chest:"грудь",back:"спина",legs:"ноги",rest:"восстановление"};
+  const breakdown=workoutRows.filter((row)=>row.focus).map((row)=>`${focusLabels[row.focus??""]??row.focus}: ${row.count}`).join(", ");
+  lines.push(`• подтверждённых тренировок за 28 дней: ${total}${breakdown?` (${breakdown})`:""}`);
   return lines.join("\n");
 }

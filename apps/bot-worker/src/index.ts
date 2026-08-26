@@ -330,7 +330,8 @@ async function handleUpdate(update: TelegramUpdate, env: Env): Promise<Response>
     reply = await startMeasurementConversation(env.DB, user.id);
   } else if (text === "/progress") {
     const user = await ensureUser(env.DB, String(message.from.id), env.APP_TIMEZONE || "Europe/Samara");
-    reply = await progressSummary(env.DB, user.id);
+    const today = toIsoDate(localDateAt(new Date(), env.APP_TIMEZONE || "Europe/Samara"));
+    reply = await progressSummary(env.DB, user.id, today);
   } else if(text==="/recovery"){
     const user=await ensureUser(env.DB,String(message.from.id),env.APP_TIMEZONE||"Europe/Samara");reply=await startRecovery(env.DB,user.id);
   } else if (text === "/goal") {

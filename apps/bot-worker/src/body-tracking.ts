@@ -31,3 +31,48 @@ export function formatDelta(value: number, previous: number): string {
   const delta = Math.round((value - previous) * 10) / 10;
   return `${delta > 0 ? "+" : ""}${delta}`;
 }
+
+export interface NutritionTrendDay {
+  local_date: string;
+  calories_kcal: number | null;
+  protein_g: number | null;
+  fat_g: number | null;
+  carbohydrate_g: number | null;
+}
+
+export interface NutritionWindow {
+  days: number;
+  caloriesKcal: number | null;
+  proteinG: number | null;
+  fatG: number | null;
+  carbohydrateG: number | null;
+}
+
+function dateOffset(date: string, days: number): string {
+  const value = new Date(`${date}T00:00:00Z`);
+  value.setUTCDate(value.getUTCDate() + days);
+  return value.toISOString().slice(0, 10);
+}
+
+function nutritionWindow(rows: NutritionTrendDay[]): NutritionWindow {
+  const average = (key: keyof Omit<NutritionTrendDay, "local_date">): number | null => {
+    const values = rows.map((row) => row[key]).filter((value): value is number => value !== null);
+    return values.length ? Math.round(values.reduce((sum, value) => sum + value, 0) / values.length) : null;
+  };
+  return {
+    days: rows.length,
+    caloriesKcal: average("calories_kcal"),
+    proteinG: average("protein_g"),
+    fatG: average("fat_g"),
+    carbohydrateG: average("carbohydrate_g"),
+  };
+}
+
+export function nutritionTrendWindows(rows: NutritionTrendDay[], targetDate: string): { recent: NutritionWindow; previous: NutritionWindow } {
+  const recentStart = dateOffset(targetDate, -6);
+  const previousStart = dateOffset(targetDate, -13);
+  return {
+    recent: nutritionWindow(rows.filter((row) => row.local_date >= recentStart && row.local_date <= targetDate)),
+    previous: nutritionWindow(rows.filter((row) => row.local_date >= previousStart && row.local_date < recentStart)),
+  };
+}
