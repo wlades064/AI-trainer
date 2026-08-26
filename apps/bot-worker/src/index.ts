@@ -54,6 +54,7 @@ import { LAB_HELP, parseCancelLabCommand, parseLabCommand } from "./labs.ts";
 import { addLabResult, cancelLabResult, listLabResults } from "./labs-db.ts";
 import { formatLabImageDraft, parseLabScreenshot } from "./lab-image.ts";
 import { cancelLabImageDraft, confirmLabImageDraft, findLabImage, pendingLabImageDraft, saveLabImageDraft } from "./lab-image-db.ts";
+import { loadModeForDate } from "./training-load-db.ts";
 
 interface Env {
   DB: D1Database;
@@ -112,6 +113,7 @@ async function workoutReply(offset: 0 | 1, env: Env, telegramUserId: string): Pr
   if (!emphasis) {
     return `${training.date}: для группы «${training.label}» ещё не задан следующий программный акцент. План не создан, чтобы не выбирать его случайно.`;
   }
+  const loadMode=await loadModeForDate(env.DB,user.id,training.date);
 
   const [candidates, restrictions, recentSummary, coachingContext] = await Promise.all([
     loadExerciseCandidates(env.DB, user.id, training.focus),
@@ -134,7 +136,7 @@ async function workoutReply(offset: 0 | 1, env: Env, telegramUserId: string): Pr
       recentSummary,
       selectionGuidance: [
         ...GUIDANCE[training.focus],
-        ...programmingRules(training.focus, emphasis),
+        ...programmingRules(training.focus, emphasis,loadMode),
         `Контекст цели и восстановления ресурсов: ${coachingContext}. Не компенсируй питание чрезмерным тренировочным объёмом.`,
         "Добавки перечислены только как фактический контекст. Не назначай, не отменяй и не меняй их дозировку; не делай медицинских выводов.",
         ...(readiness ? [`Актуальный предтренировочный чекин: ${compactReadiness(readiness)}.`] : []),
@@ -146,6 +148,7 @@ async function workoutReply(offset: 0 | 1, env: Env, telegramUserId: string): Pr
       training.date,
       training.focus,
       emphasis,
+      loadMode,
       env.GEMINI_MODEL,
       generated.workout,
       generated.inputTokens,

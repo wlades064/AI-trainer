@@ -232,19 +232,21 @@ export async function saveGeneratedPlan(
   plannedFor: string,
   focus: string,
   emphasis: TrainingEmphasis,
+  loadMode: "normal" | "deload",
   model: string,
   workout: GeneratedWorkout,
   inputTokens: number,
   outputTokens: number,
 ): Promise<void> {
   const plan = await db.prepare(
-    `INSERT INTO workout_plans(user_id, planned_for, focus, emphasis, status, source, model_name, generated_json, programming_rationale_json)
-     VALUES (?, ?, ?, ?, 'sent', 'gemini', ?, ?, ?) RETURNING id`,
+    `INSERT INTO workout_plans(user_id, planned_for, focus, emphasis, load_mode, status, source, model_name, generated_json, programming_rationale_json)
+     VALUES (?, ?, ?, ?, ?, 'sent', 'gemini', ?, ?, ?) RETURNING id`,
   ).bind(
     userId,
     plannedFor,
     focus,
     emphasis,
+    loadMode,
     model,
     JSON.stringify(workout),
     JSON.stringify(workout.programmingRationale),
