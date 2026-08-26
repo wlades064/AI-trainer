@@ -47,6 +47,7 @@ import { parseWeightCommand } from "./body-tracking.ts";
 import { answerMeasurementConversation, cancelMeasurementConversation, progressSummary, saveEmergencyWeight, startMeasurementConversation } from "./body-tracking-db.ts";
 import { goalHelp, GOAL_LABELS, parseGoalCommand } from "./goal.ts";
 import { loadCompactCoachingContext, loadCurrentGoal, setCurrentGoal } from "./goal-db.ts";
+import { commandFromMenuText, MAIN_MENU_MARKUP } from "./menu.ts";
 
 interface Env {
   DB: D1Database;
@@ -243,14 +244,17 @@ async function handleUpdate(update: TelegramUpdate, env: Env): Promise<Response>
   if (!message?.from || (!message.text && !message.caption && !message.photo?.length)) return new Response("ok");
   if (String(message.from.id) !== env.ALLOWED_TELEGRAM_USER_ID) return new Response("forbidden", { status: 403 });
 
-  const text = (message.text ?? message.caption ?? "").trim();
+  const originalText = (message.text ?? message.caption ?? "").trim();
+  const text = message.photo?.length ? originalText : commandFromMenuText(originalText);
   const offset = requestedDayOffset(text);
   let reply: string;
+  let showMenu = false;
   if (message.photo?.length) {
     reply = /^\/nutrition(?:@\w+)?$/i.test(text)
       ? await nutritionPhotoReply(update, env, String(message.from.id))
       : "Для аварийного импорта общего дневного КБЖУ пришли скриншот FatSecret с подписью /nutrition. Без этой подписи фото не отправляется в Gemini.";
-  } else if (text === "/start" || text === "/help") {
+  } else if (text === "/start" || text === "/help" || text === "/menu") {
+    showMenu = true;
     reply = "Команды: /today — тренировка на сегодня, /tomorrow — на завтра, /goal — текущая цель, /confirm — подтвердить отчёт или КБЖУ, /nutrition — подпись к скриншоту FatSecret, /weight 87.5 — аварийная запись веса, /measure — месячные замеры, /progress — динамика, /cancel — отмена текущего диалога.";
   } else if (text === "/confirm") {
     const user = await ensureUser(env.DB, String(message.from.id), env.APP_TIMEZONE || "Europe/Samara");
@@ -324,6 +328,8 @@ async function handleUpdate(update: TelegramUpdate, env: Env): Promise<Response>
       await saveEmergencyWeight(env.DB, user.id, today, weight);
       reply = `${today}: вес ${weight} кг сохранён как аварийный ввод Telegram.`;
     }
+  } else if (text === "/nutrition") {
+    reply = "Пришли один скриншот дневного итога FatSecret и добавь к фотографии подпись /nutrition. Без подписи изображение не отправится в Gemini.";
   } else if (offset !== null) {
     if (offset === 0) {
       const user = await ensureUser(env.DB, String(message.from.id), env.APP_TIMEZONE || "Europe/Samara");
@@ -337,7 +343,7 @@ async function handleUpdate(update: TelegramUpdate, env: Env): Promise<Response>
   } else {
     reply = await freeTextReply(update, env, String(message.from.id), text);
   }
-  await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, message.chat.id, reply);
+  await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, message.chat.id, reply, showMenu ? MAIN_MENU_MARKUP : undefined);
   return new Response("ok");
 }
 

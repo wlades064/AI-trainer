@@ -17,11 +17,11 @@ export interface TelegramPhotoSize {
 
 export interface TelegramUpdate { update_id: number; message?: TelegramMessage }
 
-export async function sendTelegramMessage(token: string, chatId: number, text: string): Promise<void> {
+export async function sendTelegramMessage(token: string, chatId: number, text: string, replyMarkup?: unknown): Promise<void> {
   const response = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ chat_id: chatId, text }),
+    body: JSON.stringify({ chat_id: chatId, text, ...(replyMarkup ? { reply_markup: replyMarkup } : {}) }),
   });
   if (!response.ok) throw new Error(`Telegram sendMessage failed: ${response.status}`);
 }
