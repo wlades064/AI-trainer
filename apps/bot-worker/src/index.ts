@@ -16,11 +16,12 @@ import {
 import { filterSafeExercises } from "./domain/safety.ts";
 import { programmingRules } from "./domain/programming.ts";
 import { generateWorkout, type GeneratedWorkout } from "./gemini.ts";
-import { sendTelegramMessage, type TelegramUpdate } from "./telegram.ts";
+import { downloadTelegramPhoto, selectEfficientPhoto, sendTelegramMessage, type TelegramUpdate } from "./telegram.ts";
 import {
   cancelPendingReportDraft,
   confirmPendingReportDraft,
   loadCatalogExerciseNames,
+  loadPendingReportDraft,
   loadReportPlan,
   saveReportDraft,
 } from "./workout-report-db.ts";
@@ -40,6 +41,8 @@ import {
   startReadinessConversation,
 } from "./pre-workout-readiness-db.ts";
 import { evaluateReadiness } from "./domain/safety.ts";
+import { formatNutritionDraft, parseNutritionScreenshot } from "./nutrition-image.ts";
+import { cancelNutritionDraft, confirmNutritionDraft, findNutritionImage, loadPendingNutritionDraft, saveNutritionDraft } from "./nutrition-db.ts";
 
 interface Env {
   DB: D1Database;
@@ -203,19 +206,51 @@ async function freeTextReply(update: TelegramUpdate, env: Env, telegramUserId: s
   return reportReply(update, env, telegramUserId, text);
 }
 
+async function nutritionPhotoReply(update: TelegramUpdate, env: Env, telegramUserId: string): Promise<string> {
+  const message = update.message;
+  if (!message?.photo?.length) throw new Error("Фото отсутствует");
+  const user = await ensureUser(env.DB, telegramUserId, env.APP_TIMEZONE || "Europe/Samara");
+  const selected = selectEfficientPhoto(message.photo);
+  const existing = await findNutritionImage(env.DB, user.id, selected.file_unique_id);
+  if (existing) {
+    const draft = JSON.parse(existing.parsed_json);
+    return existing.status === "confirmed" ? "Этот скриншот КБЖУ уже сохранён." : formatNutritionDraft(draft);
+  }
+  try {
+    const image = await downloadTelegramPhoto(env.TELEGRAM_BOT_TOKEN, selected.file_id);
+    const today = toIsoDate(localDateAt(new Date(), env.APP_TIMEZONE || "Europe/Samara"));
+    const parsed = await parseNutritionScreenshot(env.GEMINI_API_KEY, env.GEMINI_MODEL, image, today);
+    await saveNutritionDraft(env.DB, user.id, update.update_id, selected.file_unique_id, parsed.draft, env.GEMINI_MODEL, parsed.inputTokens, parsed.outputTokens);
+    return formatNutritionDraft(parsed.draft);
+  } catch (error) {
+    await env.DB.prepare("INSERT INTO system_events(event_type, payload_json) VALUES ('nutrition_screenshot_failed', ?)")
+      .bind(JSON.stringify({ error: error instanceof Error ? error.message : "unknown" })).run();
+    return "Не смог надёжно прочитать общий КБЖУ. Ничего не сохранено. Пришли один чёткий скриншот дневного итога FatSecret с подписью /nutrition.";
+  }
+}
+
 async function handleUpdate(update: TelegramUpdate, env: Env): Promise<Response> {
   const message = update.message;
-  if (!message?.from || !message.text) return new Response("ok");
+  if (!message?.from || (!message.text && !message.caption && !message.photo?.length)) return new Response("ok");
   if (String(message.from.id) !== env.ALLOWED_TELEGRAM_USER_ID) return new Response("forbidden", { status: 403 });
 
-  const text = message.text.trim();
+  const text = (message.text ?? message.caption ?? "").trim();
   const offset = requestedDayOffset(text);
   let reply: string;
-  if (text === "/start" || text === "/help") {
-    reply = "Команды: /today — чекин и тренировка на сегодня, /tomorrow — тренировка на завтра, /ready — продолжить предтренировочный чекин, /confirm — подтвердить отчёт, /checkin — продолжить послетренировочный чекин, /cancel — отменить текущий черновик или чекин.";
+  if (message.photo?.length) {
+    reply = /^\/nutrition(?:@\w+)?$/i.test(text)
+      ? await nutritionPhotoReply(update, env, String(message.from.id))
+      : "Для аварийного импорта общего дневного КБЖУ пришли скриншот FatSecret с подписью /nutrition. Без этой подписи фото не отправляется в Gemini.";
+  } else if (text === "/start" || text === "/help") {
+    reply = "Команды: /today — чекин и тренировка на сегодня, /tomorrow — тренировка на завтра, /ready — продолжить предтренировочный чекин, /confirm — подтвердить отчёт или КБЖУ, /checkin — продолжить послетренировочный чекин, /nutrition — подпись к скриншоту FatSecret, /cancel — отменить текущий черновик или чекин.";
   } else if (text === "/confirm") {
     const user = await ensureUser(env.DB, String(message.from.id), env.APP_TIMEZONE || "Europe/Samara");
-    try {
+    const workoutDraft = await loadPendingReportDraft(env.DB, user.id);
+    const nutritionDraft = workoutDraft ? null : await loadPendingNutritionDraft(env.DB, user.id);
+    if (nutritionDraft) {
+      const confirmed = await confirmNutritionDraft(env.DB, user.id);
+      reply = `${confirmed.date}: общий КБЖУ подтверждён и сохранён в истории питания.`;
+    } else try {
       const confirmed = await confirmPendingReportDraft(env.DB, user.id);
       try {
         const question = await startPostWorkoutCheckin(env.DB, user.id, confirmed.sessionId);
@@ -238,6 +273,8 @@ async function handleUpdate(update: TelegramUpdate, env: Env): Promise<Response>
       reply = "Послетренировочный чекин отменён. Сама подтверждённая тренировка осталась в истории.";
     } else if (await cancelReadinessConversation(env.DB, user.id)) {
       reply = "Предтренировочный чекин отменён. Тренировка не составлялась.";
+    } else if (await cancelNutritionDraft(env.DB, user.id)) {
+      reply = "Черновик КБЖУ отменён. В историю питания ничего не записано.";
     } else {
       reply = await cancelPendingReportDraft(env.DB, user.id) ? "Черновик тренировки отменён." : "Нет ожидающего подтверждения черновика или чекина.";
     }
