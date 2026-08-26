@@ -58,6 +58,7 @@ import { loadModeForDate, recoveryAssessmentDue } from "./training-load-db.ts";
 import { activeRecoveryStop, answerRecovery, cancelRecovery, startRecovery } from "./recovery-db.ts";
 import { compactStrengthContext, strengthProgressSummary } from "./strength-analytics-db.ts";
 import { answerInjuryConversation, cancelInjuryConversation, startInjuryConversation } from "./injuries-db.ts";
+import { answerReintroductionConversation, cancelReintroductionConversation, startReintroductionConversation } from "./reintroduction-db.ts";
 
 interface Env {
   DB: D1Database;
@@ -137,6 +138,8 @@ async function workoutReply(offset: 0 | 1, env: Env, telegramUserId: string): Pr
   if (safe.allowed.length === 0) {
     return `${training.date}: не нашлось разрешённых упражнений для группы «${training.label}». План не создан.`;
   }
+  const testing = safe.allowed.filter((exercise) => exercise.reintroductionStatus === "testing");
+  if (testing.length > 1) return `${training.date}: одновременно отмечено несколько тестируемых упражнений. Оставь одно через «🔄 Возврат», чтобы тест был контролируемым.`;
   try {
     const generated = await generateWorkout(env.GEMINI_API_KEY, env.GEMINI_MODEL, {
       date: training.date,
@@ -149,12 +152,16 @@ async function workoutReply(offset: 0 | 1, env: Env, telegramUserId: string): Pr
       selectionGuidance: [
         ...GUIDANCE[training.focus],
         ...programmingRules(training.focus, emphasis,loadMode),
+        ...(testing.length ? [`Обязательно включи единственное тестируемое упражнение «${testing[0].name}» с минимальной консервативной нагрузкой. Политика: ${testing[0].reintroductionLoadPolicy ?? "без повышения веса"}. Прекратить при боли, отёке или нестабильности.`] : []),
         `Контекст цели и восстановления ресурсов: ${coachingContext}. Не компенсируй питание чрезмерным тренировочным объёмом.`,
         `Фактическая силовая динамика по совместимым типам веса: ${strengthContext}. Используй её как сигнал, но не повышай нагрузку без целевого RIR и стабильной техники.`,
         "Добавки перечислены только как фактический контекст. Не назначай, не отменяй и не меняй их дозировку; не делай медицинских выводов.",
         ...(readiness ? [`Актуальный предтренировочный чекин: ${compactReadiness(readiness)}.`] : []),
       ],
     });
+    if (testing.length && !generated.workout.exercises.some((exercise) => exercise.name === testing[0].name)) {
+      throw new Error("Gemini пропустил обязательное тестируемое упражнение");
+    }
     await saveGeneratedPlan(
       env.DB,
       user.id,
@@ -238,6 +245,7 @@ async function freeTextReply(update: TelegramUpdate, env: Env, telegramUserId: s
   if (measurementReply !== null) return measurementReply;
   const recoveryReply=await answerRecovery(env.DB,user.id,text,today);if(recoveryReply!==null)return recoveryReply;
   const injuryReply=await answerInjuryConversation(env.DB,user.id,text,today);if(injuryReply!==null)return injuryReply;
+  const reintroductionReply=await answerReintroductionConversation(env.DB,user.id,text,today);if(reintroductionReply!==null)return reintroductionReply;
   return reportReply(update, env, telegramUserId, text);
 }
 
@@ -282,7 +290,7 @@ async function handleUpdate(update: TelegramUpdate, env: Env): Promise<Response>
     else reply="Фото обрабатывается только с явной подписью: /nutrition для КБЖУ или /labphoto для лабораторного бланка. Без подписи фото не отправляется в Gemini.";
   } else if (text === "/start" || text === "/help" || text === "/menu") {
     showMenu = true;
-    reply = "Команды: /today — тренировка на сегодня, /tomorrow — на завтра, /goal — текущая цель, /confirm — подтвердить отчёт или КБЖУ, /nutrition — подпись к скриншоту FatSecret, /weight 87.5 — аварийная запись веса, /measure — месячные замеры, /progress — тело и питание, /strength — силовая динамика, /injuries — травмы, /cancel — отмена текущего диалога.";
+    reply = "Команды: /today — тренировка на сегодня, /tomorrow — на завтра, /goal — текущая цель, /confirm — подтвердить отчёт или КБЖУ, /nutrition — подпись к скриншоту FatSecret, /weight 87.5 — аварийная запись веса, /measure — месячные замеры, /progress — тело и питание, /strength — силовая динамика, /injuries — травмы, /reintroductions — возврат упражнений, /cancel — отмена текущего диалога.";
   } else if (text === "/confirm") {
     const user = await ensureUser(env.DB, String(message.from.id), env.APP_TIMEZONE || "Europe/Samara");
     const workoutDraft = await loadPendingReportDraft(env.DB, user.id);
@@ -325,6 +333,8 @@ async function handleUpdate(update: TelegramUpdate, env: Env): Promise<Response>
       reply="Чекин восстановления отменён. Решение о разгрузке не менялось.";
     } else if(await cancelInjuryConversation(env.DB,user.id)){
       reply="Управление травмами отменено. Данные не изменены.";
+    } else if(await cancelReintroductionConversation(env.DB,user.id)){
+      reply="Управление возвратом упражнений отменено. Статусы не изменены.";
     } else {
       reply = await cancelPendingReportDraft(env.DB, user.id) ? "Черновик тренировки отменён." : "Нет ожидающего подтверждения черновика или чекина.";
     }
@@ -346,7 +356,9 @@ async function handleUpdate(update: TelegramUpdate, env: Env): Promise<Response>
   } else if(text==="/recovery"){
     const user=await ensureUser(env.DB,String(message.from.id),env.APP_TIMEZONE||"Europe/Samara");reply=await startRecovery(env.DB,user.id);
   } else if(text==="/injuries"){
-    const user=await ensureUser(env.DB,String(message.from.id),env.APP_TIMEZONE||"Europe/Samara");reply=await startInjuryConversation(env.DB,user.id);
+    const user=await ensureUser(env.DB,String(message.from.id),env.APP_TIMEZONE||"Europe/Samara");await cancelReintroductionConversation(env.DB,user.id);reply=await startInjuryConversation(env.DB,user.id);
+  } else if(text==="/reintroductions"){
+    const user=await ensureUser(env.DB,String(message.from.id),env.APP_TIMEZONE||"Europe/Samara");await cancelInjuryConversation(env.DB,user.id);reply=await startReintroductionConversation(env.DB,user.id);
   } else if (text === "/goal") {
     const user = await ensureUser(env.DB, String(message.from.id), env.APP_TIMEZONE || "Europe/Samara");
     const current = await loadCurrentGoal(env.DB, user.id);

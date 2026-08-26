@@ -1,0 +1,5 @@
+export type ReintroductionStatus="planned"|"testing"|"established"|"paused";
+export type ReintroductionAction={kind:"list"}|{kind:"testing"|"established"|"paused";exerciseId:number};
+export function parseReintroductionAction(text:string):ReintroductionAction|null{const value=text.trim().toLocaleLowerCase("ru-RU");if(value==="список")return{kind:"list"};const match=value.match(/^(тестировать|допустить|пауза)\s+(\d+)$/);if(!match)return null;const kinds={тестировать:"testing",допустить:"established",пауза:"paused"}as const;return{kind:kinds[match[1]as keyof typeof kinds],exerciseId:Number(match[2])}}
+export function canChangeReintroduction(from:ReintroductionStatus,to:"testing"|"established"|"paused",hasConfirmedTest:boolean):boolean{if(to==="paused")return from!=="paused";if(to==="testing")return from==="planned"||from==="paused";return from==="testing"&&hasConfirmedTest}
+export const REINTRODUCTION_HELP="Напиши «тестировать N», «допустить N» или «пауза N», где N — номер упражнения. «Список» повторит перечень.";

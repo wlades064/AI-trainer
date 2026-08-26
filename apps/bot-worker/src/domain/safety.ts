@@ -4,6 +4,8 @@ export interface ExerciseCandidate {
   riskTags: string[];
   workoutRole?: "main" | "accessory" | "either";
   priority?: number;
+  reintroductionStatus?: "testing" | "established";
+  reintroductionLoadPolicy?: string;
 }
 
 export interface ActiveRestriction {

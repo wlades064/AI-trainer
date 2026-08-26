@@ -181,6 +181,10 @@ export async function confirmPendingReportDraft(db: D1Database, userId: number):
         set.setType, set.loadBasis, setIndex + 1, set.notes,
       ).run();
     }
+    if (item.status === "completed" || item.status === "partial" || item.status === "substituted") {
+      await db.prepare("UPDATE exercise_reintroduction_plans SET last_tested_on=?,updated_at=CURRENT_TIMESTAMP WHERE user_id=? AND exercise_id=? AND status='testing'")
+        .bind(draft.report.date, userId, exercise.id).run();
+    }
   }
   for (let index = 0; index < draft.report.cardio.length; index += 1) {
     const cardio = draft.report.cardio[index];

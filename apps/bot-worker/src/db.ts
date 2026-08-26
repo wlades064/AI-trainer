@@ -82,6 +82,8 @@ interface ExerciseRow {
   risk_tag: string | null;
   workout_role: "main" | "accessory" | "either";
   priority: number;
+  reintroduction_status: "testing" | "established" | null;
+  load_policy: string | null;
 }
 
 const GROUPS_BY_FOCUS = {
@@ -98,20 +100,18 @@ export async function loadExerciseCandidates(
   const groups = GROUPS_BY_FOCUS[focus];
   const placeholders = groups.map(() => "?").join(", ");
   const result = await db.prepare(
-    `SELECT exercise.id, exercise.name, risk.risk_tag, settings.workout_role, settings.priority
+    `SELECT exercise.id, exercise.name, risk.risk_tag, settings.workout_role, settings.priority,
+            reintroduction.status AS reintroduction_status, reintroduction.load_policy
      FROM user_exercise_settings settings
      JOIN exercises exercise ON exercise.id = settings.exercise_id
      LEFT JOIN exercise_risk_tags risk ON risk.exercise_id = exercise.id
+     LEFT JOIN exercise_reintroduction_plans reintroduction
+       ON reintroduction.user_id = settings.user_id AND reintroduction.exercise_id = exercise.id
      WHERE settings.user_id = ?
        AND settings.availability = 'active'
        AND exercise.active = 1
        AND exercise.muscle_group IN (${placeholders})
-       AND NOT EXISTS (
-         SELECT 1 FROM exercise_reintroduction_plans reintroduction
-         WHERE reintroduction.user_id = settings.user_id
-           AND reintroduction.exercise_id = exercise.id
-           AND reintroduction.status IN ('planned', 'paused')
-       )
+       AND (reintroduction.status IS NULL OR reintroduction.status IN ('testing', 'established'))
      ORDER BY settings.priority DESC, exercise.name`,
   ).bind(userId, ...groups).all<ExerciseRow>();
 
@@ -123,6 +123,10 @@ export async function loadExerciseCandidates(
       riskTags: [],
       workoutRole: row.workout_role,
       priority: row.priority,
+      ...(row.reintroduction_status ? {
+        reintroductionStatus: row.reintroduction_status,
+        reintroductionLoadPolicy: row.load_policy ?? undefined,
+      } : {}),
     };
     if (row.risk_tag && !candidate.riskTags.includes(row.risk_tag)) candidate.riskTags.push(row.risk_tag);
     candidates.set(row.id, candidate);
