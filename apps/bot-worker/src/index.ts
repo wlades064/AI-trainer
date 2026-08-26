@@ -55,6 +55,7 @@ import { addLabResult, cancelLabResult, listLabResults } from "./labs-db.ts";
 import { formatLabImageDraft, parseLabScreenshot } from "./lab-image.ts";
 import { cancelLabImageDraft, confirmLabImageDraft, findLabImage, pendingLabImageDraft, saveLabImageDraft } from "./lab-image-db.ts";
 import { loadModeForDate } from "./training-load-db.ts";
+import { activeRecoveryStop, answerRecovery, cancelRecovery, startRecovery } from "./recovery-db.ts";
 
 interface Env {
   DB: D1Database;
@@ -106,6 +107,8 @@ async function workoutReply(offset: 0 | 1, env: Env, telegramUserId: string): Pr
       return `${training.date}: тренировку не составляю: ${decision.reasons.join(", ")}. При резком или необычном ухудшении состояния обратись за медицинской помощью.`;
     }
   }
+  const recoveryStop=await activeRecoveryStop(env.DB,user.id);
+  if(recoveryStop)return`${training.date}: тренировку не составляю — действует блок восстановления: ${recoveryStop.join(", ")}. Пройди «🩺 Восстановление» повторно после проверки состояния; при тревожных симптомах обратись за медицинской помощью.`;
   const existing = await loadExistingGeneratedPlan(env.DB, user.id, training.date, training.focus);
   if (existing) return formatWorkout(training.date, existing, true);
 
@@ -223,6 +226,7 @@ async function freeTextReply(update: TelegramUpdate, env: Env, telegramUserId: s
   const today = toIsoDate(localDateAt(new Date(), env.APP_TIMEZONE || "Europe/Samara"));
   const measurementReply = await answerMeasurementConversation(env.DB, user.id, text, today);
   if (measurementReply !== null) return measurementReply;
+  const recoveryReply=await answerRecovery(env.DB,user.id,text,today);if(recoveryReply!==null)return recoveryReply;
   return reportReply(update, env, telegramUserId, text);
 }
 
@@ -306,6 +310,8 @@ async function handleUpdate(update: TelegramUpdate, env: Env): Promise<Response>
       reply="Черновик анализов отменён. Показатели не сохранены.";
     } else if (await cancelMeasurementConversation(env.DB, user.id)) {
       reply = "Ввод замеров отменён. Незавершённые значения не сохранены.";
+    } else if(await cancelRecovery(env.DB,user.id)){
+      reply="Чекин восстановления отменён. Решение о разгрузке не менялось.";
     } else {
       reply = await cancelPendingReportDraft(env.DB, user.id) ? "Черновик тренировки отменён." : "Нет ожидающего подтверждения черновика или чекина.";
     }
@@ -321,6 +327,8 @@ async function handleUpdate(update: TelegramUpdate, env: Env): Promise<Response>
   } else if (text === "/progress") {
     const user = await ensureUser(env.DB, String(message.from.id), env.APP_TIMEZONE || "Europe/Samara");
     reply = await progressSummary(env.DB, user.id);
+  } else if(text==="/recovery"){
+    const user=await ensureUser(env.DB,String(message.from.id),env.APP_TIMEZONE||"Europe/Samara");reply=await startRecovery(env.DB,user.id);
   } else if (text === "/goal") {
     const user = await ensureUser(env.DB, String(message.from.id), env.APP_TIMEZONE || "Europe/Samara");
     const current = await loadCurrentGoal(env.DB, user.id);
