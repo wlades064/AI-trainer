@@ -54,7 +54,7 @@ import { LAB_HELP, parseCancelLabCommand, parseLabCommand } from "./labs.ts";
 import { addLabResult, cancelLabResult, listLabResults } from "./labs-db.ts";
 import { formatLabImageDraft, parseLabScreenshot } from "./lab-image.ts";
 import { cancelLabImageDraft, confirmLabImageDraft, findLabImage, pendingLabImageDraft, saveLabImageDraft } from "./lab-image-db.ts";
-import { loadModeForDate } from "./training-load-db.ts";
+import { loadModeForDate, recoveryAssessmentDue } from "./training-load-db.ts";
 import { activeRecoveryStop, answerRecovery, cancelRecovery, startRecovery } from "./recovery-db.ts";
 
 interface Env {
@@ -117,6 +117,10 @@ async function workoutReply(offset: 0 | 1, env: Env, telegramUserId: string): Pr
     return `${training.date}: для группы «${training.label}» ещё не задан следующий программный акцент. План не создан, чтобы не выбирать его случайно.`;
   }
   const loadMode=await loadModeForDate(env.DB,user.id,training.date);
+  if(loadMode==="normal"&&await recoveryAssessmentDue(env.DB,user.id,training.date)){
+    const question=await startRecovery(env.DB,user.id);
+    return`Перед следующей тренировкой нужна плановая оценка восстановления: завершено минимум четыре тяжёлые недели. После чекина снова нажми «🏋️ Сегодня» или «📅 Завтра».\n\n${question}`;
+  }
 
   const [candidates, restrictions, recentSummary, coachingContext] = await Promise.all([
     loadExerciseCandidates(env.DB, user.id, training.focus),
