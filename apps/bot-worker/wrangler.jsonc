@@ -1,0 +1,29 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "ai-trainer-bot",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-08-23",
+  "workers_dev": true,
+  "preview_urls": false,
+  "vars": {
+    "APP_TIMEZONE": "Europe/Samara",
+    "GEMINI_MODEL": "gemini-3.6-flash"
+  },
+  "secrets": {
+    "required": [
+      "TELEGRAM_BOT_TOKEN",
+      "TELEGRAM_WEBHOOK_SECRET",
+      "ALLOWED_TELEGRAM_USER_ID",
+      "GEMINI_API_KEY"
+    ]
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "ai-trainer",
+      "database_id": "2427b983-36a6-4f1f-8264-9168a84dfe34",
+      "migrations_dir": "../../db/migrations"
+    }
+  ],
+  "triggers": { "crons": ["50 19 * * *", "0 5 * * 1"] }
+}
