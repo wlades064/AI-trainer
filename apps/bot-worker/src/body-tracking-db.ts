@@ -1,0 +1,75 @@
+import type { D1Database } from "./db.ts";
+import { formatDelta, measurementQuestion, MEASUREMENT_KINDS, parseCentimeters, type MeasurementStep } from "./body-tracking.ts";
+
+interface ConversationRow { id: number; step: MeasurementStep; values_json: string }
+
+async function pendingConversation(db: D1Database, userId: number): Promise<ConversationRow | null> {
+  return db.prepare(`SELECT id, step, values_json FROM measurement_conversations
+    WHERE user_id=? AND status='pending' AND expires_at>CURRENT_TIMESTAMP ORDER BY updated_at DESC LIMIT 1`)
+    .bind(userId).first<ConversationRow>();
+}
+
+export async function startMeasurementConversation(db: D1Database, userId: number): Promise<string> {
+  const pending = await pendingConversation(db, userId); if (pending) return measurementQuestion(pending.step);
+  await db.prepare(`INSERT INTO measurement_conversations(user_id, step, values_json, status, expires_at)
+    VALUES (?,1,'{}','pending',datetime('now','+2 days'))`).bind(userId).run();
+  return `${measurementQuestion(1)}\nИзмеряй каждый раз в одинаковых условиях и в одной и той же точке.`;
+}
+
+export async function cancelMeasurementConversation(db: D1Database, userId: number): Promise<boolean> {
+  const row = await pendingConversation(db, userId); if (!row) return false;
+  await db.prepare("UPDATE measurement_conversations SET status='cancelled', updated_at=CURRENT_TIMESTAMP WHERE id=?").bind(row.id).run(); return true;
+}
+
+export async function answerMeasurementConversation(db: D1Database, userId: number, text: string, localDate: string): Promise<string | null> {
+  const row = await pendingConversation(db, userId); if (!row) return null;
+  const value = parseCentimeters(text);
+  if (value === null) return `Нужно число от 20 до 250 см, максимум с одним знаком после запятой.\n\n${measurementQuestion(row.step)}`;
+  const values = JSON.parse(row.values_json) as Record<string, number>;
+  const [kind] = MEASUREMENT_KINDS[row.step - 1]; values[kind] = value;
+  if (row.step < 5) {
+    const next = (row.step + 1) as MeasurementStep;
+    await db.prepare("UPDATE measurement_conversations SET step=?, values_json=?, updated_at=CURRENT_TIMESTAMP WHERE id=?")
+      .bind(next, JSON.stringify(values), row.id).run();
+    return measurementQuestion(next);
+  }
+  for (const [measurementKind] of MEASUREMENT_KINDS) {
+    await db.prepare(`INSERT INTO body_measurements(user_id, measured_at, kind, value, unit, source)
+      VALUES (?, ?, ?, ?, 'cm', 'telegram_manual')
+      ON CONFLICT(user_id, measured_at, kind, source) DO UPDATE SET value=excluded.value`)
+      .bind(userId, localDate, measurementKind, values[measurementKind]).run();
+  }
+  await db.prepare("UPDATE measurement_conversations SET values_json=?, status='completed', updated_at=CURRENT_TIMESTAMP, completed_at=CURRENT_TIMESTAMP WHERE id=?")
+    .bind(JSON.stringify(values), row.id).run();
+  return ["Замеры сохранены:", ...MEASUREMENT_KINDS.map(([key, label]) => `• ${label}: ${values[key]} см`)].join("\n");
+}
+
+export async function saveEmergencyWeight(db: D1Database, userId: number, localDate: string, weightKg: number): Promise<void> {
+  await db.prepare(`INSERT INTO body_measurements(user_id, measured_at, kind, value, unit, source)
+    VALUES (?, ?, 'weight', ?, 'kg', 'telegram_emergency')
+    ON CONFLICT(user_id, measured_at, kind, source) DO UPDATE SET value=excluded.value`)
+    .bind(userId, localDate, weightKg).run();
+}
+
+interface MeasurementRow { measured_at: string; kind: string; value: number; unit: string }
+export async function progressSummary(db: D1Database, userId: number): Promise<string> {
+  const measurements = await db.prepare(`SELECT measured_at, kind, value, unit FROM body_measurements
+    WHERE user_id=? ORDER BY measured_at DESC LIMIT 80`).bind(userId).all<MeasurementRow>();
+  const nutrition = await db.prepare(`SELECT local_date, calories_kcal, protein_g FROM nutrition_days
+    WHERE user_id=? ORDER BY local_date DESC LIMIT 14`).bind(userId).all<{local_date:string;calories_kcal:number|null;protein_g:number|null}>();
+  const workouts = await db.prepare(`SELECT COUNT(*) AS count FROM workout_sessions
+    WHERE user_id=? AND confirmed_at IS NOT NULL AND local_date>=date('now','-28 days')`).bind(userId).first<{count:number}>();
+  const byKind = new Map<string, MeasurementRow[]>();
+  for (const item of measurements.results ?? []) { const list=byKind.get(item.kind)??[]; list.push(item); byKind.set(item.kind,list); }
+  const lines: string[] = ["Динамика:"];
+  const labels = new Map([...MEASUREMENT_KINDS, ["weight", "вес"]] as Array<readonly [string,string]>);
+  for (const [kind, label] of labels) {
+    const list=byKind.get(kind); if (!list?.length) continue;
+    const current=list[0]; const previous=list[1];
+    lines.push(`• ${label}: ${current.value} ${current.unit}${previous ? ` (${formatDelta(current.value, previous.value)} к предыдущему замеру)` : ""}`);
+  }
+  const days=(nutrition.results??[]).filter((d)=>d.calories_kcal!==null);
+  if(days.length){ const kcal=Math.round(days.reduce((s,d)=>s+(d.calories_kcal??0),0)/days.length); const protein=Math.round(days.reduce((s,d)=>s+(d.protein_g??0),0)/days.length); lines.push(`• питание: в среднем ${kcal} ккал и ${protein} г белка за ${days.length} дн.`); }
+  lines.push(`• подтверждённых тренировок за 28 дней: ${workouts?.count ?? 0}`);
+  return lines.join("\n");
+}

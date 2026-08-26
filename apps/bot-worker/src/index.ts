@@ -43,6 +43,8 @@ import {
 import { evaluateReadiness } from "./domain/safety.ts";
 import { formatNutritionDraft, parseNutritionScreenshot } from "./nutrition-image.ts";
 import { cancelNutritionDraft, confirmNutritionDraft, findNutritionImage, loadPendingNutritionDraft, saveNutritionDraft } from "./nutrition-db.ts";
+import { parseWeightCommand } from "./body-tracking.ts";
+import { answerMeasurementConversation, cancelMeasurementConversation, progressSummary, saveEmergencyWeight, startMeasurementConversation } from "./body-tracking-db.ts";
 
 interface Env {
   DB: D1Database;
@@ -203,6 +205,9 @@ async function freeTextReply(update: TelegramUpdate, env: Env, telegramUserId: s
     }
     return readinessReply.reply;
   }
+  const today = toIsoDate(localDateAt(new Date(), env.APP_TIMEZONE || "Europe/Samara"));
+  const measurementReply = await answerMeasurementConversation(env.DB, user.id, text, today);
+  if (measurementReply !== null) return measurementReply;
   return reportReply(update, env, telegramUserId, text);
 }
 
@@ -242,7 +247,7 @@ async function handleUpdate(update: TelegramUpdate, env: Env): Promise<Response>
       ? await nutritionPhotoReply(update, env, String(message.from.id))
       : "Для аварийного импорта общего дневного КБЖУ пришли скриншот FatSecret с подписью /nutrition. Без этой подписи фото не отправляется в Gemini.";
   } else if (text === "/start" || text === "/help") {
-    reply = "Команды: /today — чекин и тренировка на сегодня, /tomorrow — тренировка на завтра, /ready — продолжить предтренировочный чекин, /confirm — подтвердить отчёт или КБЖУ, /checkin — продолжить послетренировочный чекин, /nutrition — подпись к скриншоту FatSecret, /cancel — отменить текущий черновик или чекин.";
+    reply = "Команды: /today — тренировка на сегодня, /tomorrow — на завтра, /confirm — подтвердить отчёт или КБЖУ, /nutrition — подпись к скриншоту FatSecret, /weight 87.5 — аварийная запись веса, /measure — месячные замеры, /progress — динамика, /cancel — отмена текущего диалога.";
   } else if (text === "/confirm") {
     const user = await ensureUser(env.DB, String(message.from.id), env.APP_TIMEZONE || "Europe/Samara");
     const workoutDraft = await loadPendingReportDraft(env.DB, user.id);
@@ -275,6 +280,8 @@ async function handleUpdate(update: TelegramUpdate, env: Env): Promise<Response>
       reply = "Предтренировочный чекин отменён. Тренировка не составлялась.";
     } else if (await cancelNutritionDraft(env.DB, user.id)) {
       reply = "Черновик КБЖУ отменён. В историю питания ничего не записано.";
+    } else if (await cancelMeasurementConversation(env.DB, user.id)) {
+      reply = "Ввод замеров отменён. Незавершённые значения не сохранены.";
     } else {
       reply = await cancelPendingReportDraft(env.DB, user.id) ? "Черновик тренировки отменён." : "Нет ожидающего подтверждения черновика или чекина.";
     }
@@ -284,6 +291,22 @@ async function handleUpdate(update: TelegramUpdate, env: Env): Promise<Response>
   } else if (text === "/ready") {
     const user = await ensureUser(env.DB, String(message.from.id), env.APP_TIMEZONE || "Europe/Samara");
     reply = await pendingReadinessQuestion(env.DB, user.id) ?? "Нет незавершённого предтренировочного чекина. Начать его можно командой /today.";
+  } else if (text === "/measure") {
+    const user = await ensureUser(env.DB, String(message.from.id), env.APP_TIMEZONE || "Europe/Samara");
+    reply = await startMeasurementConversation(env.DB, user.id);
+  } else if (text === "/progress") {
+    const user = await ensureUser(env.DB, String(message.from.id), env.APP_TIMEZONE || "Europe/Samara");
+    reply = await progressSummary(env.DB, user.id);
+  } else if (/^\/weight(?:@\w+)?(?:\s|$)/i.test(text)) {
+    const weight = parseWeightCommand(text);
+    if (weight === null) {
+      reply = "Формат: /weight 87.5. Допустимый диапазон — 30–300 кг. Используй команду только как резерв, если импорт из FatSecret недоступен.";
+    } else {
+      const user = await ensureUser(env.DB, String(message.from.id), env.APP_TIMEZONE || "Europe/Samara");
+      const today = toIsoDate(localDateAt(new Date(), env.APP_TIMEZONE || "Europe/Samara"));
+      await saveEmergencyWeight(env.DB, user.id, today, weight);
+      reply = `${today}: вес ${weight} кг сохранён как аварийный ввод Telegram.`;
+    }
   } else if (offset !== null) {
     if (offset === 0) {
       const user = await ensureUser(env.DB, String(message.from.id), env.APP_TIMEZONE || "Europe/Samara");
