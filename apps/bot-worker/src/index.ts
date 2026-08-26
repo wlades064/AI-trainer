@@ -45,6 +45,8 @@ import { formatNutritionDraft, parseNutritionScreenshot } from "./nutrition-imag
 import { cancelNutritionDraft, confirmNutritionDraft, findNutritionImage, loadPendingNutritionDraft, saveNutritionDraft } from "./nutrition-db.ts";
 import { parseWeightCommand } from "./body-tracking.ts";
 import { answerMeasurementConversation, cancelMeasurementConversation, progressSummary, saveEmergencyWeight, startMeasurementConversation } from "./body-tracking-db.ts";
+import { goalHelp, GOAL_LABELS, parseGoalCommand } from "./goal.ts";
+import { loadCompactCoachingContext, loadCurrentGoal, setCurrentGoal } from "./goal-db.ts";
 
 interface Env {
   DB: D1Database;
@@ -104,10 +106,11 @@ async function workoutReply(offset: 0 | 1, env: Env, telegramUserId: string): Pr
     return `${training.date}: для группы «${training.label}» ещё не задан следующий программный акцент. План не создан, чтобы не выбирать его случайно.`;
   }
 
-  const [candidates, restrictions, recentSummary] = await Promise.all([
+  const [candidates, restrictions, recentSummary, coachingContext] = await Promise.all([
     loadExerciseCandidates(env.DB, user.id, training.focus),
     loadActiveRestrictions(env.DB, user.id),
     loadRecentSummary(env.DB, user.id, training.focus),
+    loadCompactCoachingContext(env.DB, user.id),
   ]);
   const safe = filterSafeExercises(candidates, restrictions);
   if (safe.allowed.length === 0) {
@@ -125,6 +128,7 @@ async function workoutReply(offset: 0 | 1, env: Env, telegramUserId: string): Pr
       selectionGuidance: [
         ...GUIDANCE[training.focus],
         ...programmingRules(training.focus, emphasis),
+        `Контекст цели и восстановления ресурсов: ${coachingContext}. Не компенсируй питание чрезмерным тренировочным объёмом.`,
         ...(readiness ? [`Актуальный предтренировочный чекин: ${compactReadiness(readiness)}.`] : []),
       ],
     });
@@ -247,7 +251,7 @@ async function handleUpdate(update: TelegramUpdate, env: Env): Promise<Response>
       ? await nutritionPhotoReply(update, env, String(message.from.id))
       : "Для аварийного импорта общего дневного КБЖУ пришли скриншот FatSecret с подписью /nutrition. Без этой подписи фото не отправляется в Gemini.";
   } else if (text === "/start" || text === "/help") {
-    reply = "Команды: /today — тренировка на сегодня, /tomorrow — на завтра, /confirm — подтвердить отчёт или КБЖУ, /nutrition — подпись к скриншоту FatSecret, /weight 87.5 — аварийная запись веса, /measure — месячные замеры, /progress — динамика, /cancel — отмена текущего диалога.";
+    reply = "Команды: /today — тренировка на сегодня, /tomorrow — на завтра, /goal — текущая цель, /confirm — подтвердить отчёт или КБЖУ, /nutrition — подпись к скриншоту FatSecret, /weight 87.5 — аварийная запись веса, /measure — месячные замеры, /progress — динамика, /cancel — отмена текущего диалога.";
   } else if (text === "/confirm") {
     const user = await ensureUser(env.DB, String(message.from.id), env.APP_TIMEZONE || "Europe/Samara");
     const workoutDraft = await loadPendingReportDraft(env.DB, user.id);
@@ -297,6 +301,19 @@ async function handleUpdate(update: TelegramUpdate, env: Env): Promise<Response>
   } else if (text === "/progress") {
     const user = await ensureUser(env.DB, String(message.from.id), env.APP_TIMEZONE || "Europe/Samara");
     reply = await progressSummary(env.DB, user.id);
+  } else if (text === "/goal") {
+    const user = await ensureUser(env.DB, String(message.from.id), env.APP_TIMEZONE || "Europe/Samara");
+    const current = await loadCurrentGoal(env.DB, user.id);
+    reply = `${current ? `Текущая цель: ${GOAL_LABELS[current.goal_type]}.\n\n` : "Цель пока не задана.\n\n"}${goalHelp()}`;
+  } else if (/^\/goal(?:@\w+)?(?:\s|$)/i.test(text)) {
+    const goal = parseGoalCommand(text);
+    if (!goal) reply = `Не понял цель.\n\n${goalHelp()}`;
+    else {
+      const user = await ensureUser(env.DB, String(message.from.id), env.APP_TIMEZONE || "Europe/Samara");
+      const today = toIsoDate(localDateAt(new Date(), env.APP_TIMEZONE || "Europe/Samara"));
+      await setCurrentGoal(env.DB, user.id, goal, today);
+      reply = `Текущая цель обновлена: ${GOAL_LABELS[goal]}. Следующие тренировки будут учитывать её вместе с доступными данными питания и веса.`;
+    }
   } else if (/^\/weight(?:@\w+)?(?:\s|$)/i.test(text)) {
     const weight = parseWeightCommand(text);
     if (weight === null) {
