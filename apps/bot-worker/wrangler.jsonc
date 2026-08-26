@@ -25,5 +25,5 @@
       "migrations_dir": "../../db/migrations"
     }
   ],
-  "triggers": { "crons": ["50 19 * * *", "0 5 * * 1"] }
+  "triggers": { "crons": ["0 * * * *", "50 19 * * *", "0 5 * * 1"] }
 }

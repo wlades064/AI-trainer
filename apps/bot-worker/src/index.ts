@@ -62,6 +62,7 @@ import { answerReintroductionConversation, cancelReintroductionConversation, sta
 import { answerExerciseCatalogConversation, cancelExerciseCatalogConversation, startExerciseCatalogConversation } from "./exercise-catalog-db.ts";
 import { answerExerciseAddConversation, cancelExerciseAddConversation } from "./exercise-add-db.ts";
 import { answerScheduleConversation, cancelScheduleConversation, loadScheduleOverride, startScheduleConversation } from "./schedule-management-db.ts";
+import { answerReminderConversation, cancelReminderConversation, runDueReminders, startReminderConversation } from "./reminders-db.ts";
 
 interface Env {
   DB: D1Database;
@@ -260,6 +261,7 @@ async function freeTextReply(update: TelegramUpdate, env: Env, telegramUserId: s
   const catalogReply=await answerExerciseCatalogConversation(env.DB,user.id,text);if(catalogReply!==null)return catalogReply;
   const exerciseAddReply=await answerExerciseAddConversation(env.DB,user.id,text);if(exerciseAddReply!==null)return exerciseAddReply;
   const scheduleReply=await answerScheduleConversation(env.DB,user.id,text,today);if(scheduleReply!==null)return scheduleReply;
+  const reminderReply=await answerReminderConversation(env.DB,user.id,text);if(reminderReply!==null)return reminderReply;
   return reportReply(update, env, telegramUserId, text);
 }
 
@@ -304,7 +306,7 @@ async function handleUpdate(update: TelegramUpdate, env: Env): Promise<Response>
     else reply="Фото обрабатывается только с явной подписью: /nutrition для КБЖУ или /labphoto для лабораторного бланка. Без подписи фото не отправляется в Gemini.";
   } else if (text === "/start" || text === "/help" || text === "/menu") {
     showMenu = true;
-    reply = "Команды: /today — тренировка на сегодня, /tomorrow — на завтра, /schedule — разовые переносы и отмены, /goal — текущая цель, /confirm — подтвердить отчёт или КБЖУ, /nutrition — подпись к скриншоту FatSecret, /weight 87.5 — аварийная запись веса, /measure — месячные замеры, /progress — тело и питание, /strength — силовая динамика, /injuries — травмы, /reintroductions — возврат упражнений, /exercises — каталог, /cancel — отмена текущего диалога.";
+    reply = "Команды: /today — тренировка на сегодня, /tomorrow — на завтра, /schedule — разовые переносы и отмены, /reminders — напоминания о весе и замерах, /goal — текущая цель, /confirm — подтвердить отчёт или КБЖУ, /nutrition — подпись к скриншоту FatSecret, /weight 87.5 — аварийная запись веса, /measure — месячные замеры, /progress — тело и питание, /strength — силовая динамика, /injuries — травмы, /reintroductions — возврат упражнений, /exercises — каталог, /cancel — отмена текущего диалога.";
   } else if (text === "/confirm") {
     const user = await ensureUser(env.DB, String(message.from.id), env.APP_TIMEZONE || "Europe/Samara");
     const workoutDraft = await loadPendingReportDraft(env.DB, user.id);
@@ -355,6 +357,8 @@ async function handleUpdate(update: TelegramUpdate, env: Env): Promise<Response>
       reply="Черновик нового упражнения отменён. В каталог ничего не добавлено.";
     } else if(await cancelScheduleConversation(env.DB,user.id)){
       reply="Изменение расписания отменено. Расписание не менялось.";
+    } else if(await cancelReminderConversation(env.DB,user.id)){
+      reply="Настройка напоминаний отменена. Сохранённые напоминания не изменились.";
     } else {
       reply = await cancelPendingReportDraft(env.DB, user.id) ? "Черновик тренировки отменён." : "Нет ожидающего подтверждения черновика или чекина.";
     }
@@ -383,6 +387,8 @@ async function handleUpdate(update: TelegramUpdate, env: Env): Promise<Response>
     const user=await ensureUser(env.DB,String(message.from.id),env.APP_TIMEZONE||"Europe/Samara");await cancelInjuryConversation(env.DB,user.id);await cancelReintroductionConversation(env.DB,user.id);await cancelExerciseAddConversation(env.DB,user.id);await cancelScheduleConversation(env.DB,user.id);reply=await startExerciseCatalogConversation(env.DB,user.id);
   } else if(text==="/schedule"){
     const user=await ensureUser(env.DB,String(message.from.id),env.APP_TIMEZONE||"Europe/Samara");await cancelInjuryConversation(env.DB,user.id);await cancelReintroductionConversation(env.DB,user.id);await cancelExerciseCatalogConversation(env.DB,user.id);await cancelExerciseAddConversation(env.DB,user.id);const today=toIsoDate(localDateAt(new Date(),env.APP_TIMEZONE||"Europe/Samara"));reply=await startScheduleConversation(env.DB,user.id,today);
+  } else if(text==="/reminders"){
+    const user=await ensureUser(env.DB,String(message.from.id),env.APP_TIMEZONE||"Europe/Samara");await cancelInjuryConversation(env.DB,user.id);await cancelReintroductionConversation(env.DB,user.id);await cancelExerciseCatalogConversation(env.DB,user.id);await cancelExerciseAddConversation(env.DB,user.id);await cancelScheduleConversation(env.DB,user.id);reply=await startReminderConversation(env.DB,user.id);
   } else if (text === "/goal") {
     const user = await ensureUser(env.DB, String(message.from.id), env.APP_TIMEZONE || "Europe/Samara");
     const current = await loadCurrentGoal(env.DB, user.id);
@@ -461,8 +467,14 @@ export default {
   },
 
   async scheduled(controller: { cron: string; scheduledTime: number }, env: Env): Promise<void> {
+    const delivered = await runDueReminders(
+      env.DB,
+      new Date(controller.scheduledTime),
+      env.APP_TIMEZONE || "Europe/Samara",
+      (telegramUserId, text) => sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, Number(telegramUserId), text, MAIN_MENU_MARKUP),
+    );
     await env.DB.prepare("INSERT INTO system_events (event_type, scheduled_for, payload_json) VALUES (?, ?, ?)")
-      .bind("cron_fired", new Date(controller.scheduledTime).toISOString(), JSON.stringify({ cron: controller.cron }))
+      .bind("cron_fired", new Date(controller.scheduledTime).toISOString(), JSON.stringify({ cron: controller.cron, remindersDelivered: delivered }))
       .run();
   },
 };

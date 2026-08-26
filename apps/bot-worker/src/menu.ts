@@ -14,6 +14,7 @@ export const MENU_COMMANDS: Readonly<Record<string, string>> = {
   "🔄 Возврат": "/reintroductions",
   "⚙️ Упражнения": "/exercises",
   "🗓 Расписание": "/schedule",
+  "⏰ Напоминания": "/reminders",
   "❓ Помощь": "/help",
 };
 
@@ -26,7 +27,8 @@ export const MAIN_MENU_MARKUP = {
     [{ text: "🍽 КБЖУ" }, { text: "💊 Добавки" }],
     [{ text: "🧪 Анализы" }, { text: "⚙️ Упражнения" }],
     [{ text: "🦴 Травмы" }, { text: "🔄 Возврат" }],
-    [{ text: "🗓 Расписание" }, { text: "❓ Помощь" }],
+    [{ text: "🗓 Расписание" }, { text: "⏰ Напоминания" }],
+    [{ text: "❓ Помощь" }],
   ],
   resize_keyboard: true,
   is_persistent: true,
