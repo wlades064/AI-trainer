@@ -1,0 +1,9 @@
+export type CatalogGroup="chest"|"back"|"legs"|"shoulders"|"biceps"|"triceps";
+export type CatalogAction={kind:"availability";exerciseId:number;availability:"active"|"paused"|"rare"}|{kind:"priority";exerciseId:number;priority:number}|{kind:"back"};
+const GROUP_ALIASES:Record<string,CatalogGroup>={грудь:"chest",спина:"back",ноги:"legs",плечи:"shoulders",бицепс:"biceps",трицепс:"triceps"};
+export const CATALOG_GROUP_LABELS:Record<CatalogGroup,string>={chest:"грудь",back:"спина",legs:"ноги",shoulders:"плечи",biceps:"бицепс",triceps:"трицепс"};
+export const MUSCLE_GROUPS:Record<CatalogGroup,readonly string[]>={chest:["chest"],back:["back","traps"],legs:["legs","quadriceps","hamstrings","posterior_chain","calves","glutes","adductors"],shoulders:["shoulders","middle_delts","front_delts","rear_delts"],biceps:["biceps"],triceps:["triceps"]};
+export function parseCatalogGroup(text:string):CatalogGroup|null{return GROUP_ALIASES[text.trim().toLocaleLowerCase("ru-RU")]??null}
+export function parseCatalogAction(text:string):CatalogAction|null{const value=text.trim().toLocaleLowerCase("ru-RU");if(value==="назад")return{kind:"back"};const availability=value.match(/^(активно|пауза|редко)\s+(\d+)$/);if(availability){const values={активно:"active",пауза:"paused",редко:"rare"}as const;return{kind:"availability",exerciseId:Number(availability[2]),availability:values[availability[1]as keyof typeof values]}}const priority=value.match(/^приоритет\s+(\d+)\s+(-?[0-2])$/);return priority?{kind:"priority",exerciseId:Number(priority[1]),priority:Number(priority[2])}:null}
+export const CATALOG_GROUP_QUESTION="Выбери группу: грудь, спина, ноги, плечи, бицепс или трицепс.";
+export const CATALOG_ACTION_HELP="Действия: «пауза N», «активно N», «редко N», «приоритет N X», где X от -2 до 2. «Назад» — выбрать другую группу.";

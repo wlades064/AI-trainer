@@ -1,0 +1,3 @@
+import test from"node:test";import assert from"node:assert/strict";import{parseCatalogAction,parseCatalogGroup}from"../src/exercise-catalog.ts";
+test("catalog group names are explicit",()=>{assert.equal(parseCatalogGroup("грудь"),"chest");assert.equal(parseCatalogGroup("руки"),null)});
+test("catalog actions validate ids and priority",()=>{assert.deepEqual(parseCatalogAction("пауза 14"),{kind:"availability",exerciseId:14,availability:"paused"});assert.deepEqual(parseCatalogAction("приоритет 14 -2"),{kind:"priority",exerciseId:14,priority:-2});assert.equal(parseCatalogAction("приоритет 14 5"),null)});

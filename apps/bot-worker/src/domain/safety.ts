@@ -6,6 +6,7 @@ export interface ExerciseCandidate {
   priority?: number;
   reintroductionStatus?: "testing" | "established";
   reintroductionLoadPolicy?: string;
+  availability?: "active" | "rare";
 }
 
 export interface ActiveRestriction {
