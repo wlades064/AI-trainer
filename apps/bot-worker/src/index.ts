@@ -57,6 +57,7 @@ import { cancelLabImageDraft, confirmLabImageDraft, findLabImage, pendingLabImag
 import { loadModeForDate, recoveryAssessmentDue } from "./training-load-db.ts";
 import { activeRecoveryStop, answerRecovery, cancelRecovery, startRecovery } from "./recovery-db.ts";
 import { compactStrengthContext, strengthProgressSummary } from "./strength-analytics-db.ts";
+import { answerInjuryConversation, cancelInjuryConversation, startInjuryConversation } from "./injuries-db.ts";
 
 interface Env {
   DB: D1Database;
@@ -236,6 +237,7 @@ async function freeTextReply(update: TelegramUpdate, env: Env, telegramUserId: s
   const measurementReply = await answerMeasurementConversation(env.DB, user.id, text, today);
   if (measurementReply !== null) return measurementReply;
   const recoveryReply=await answerRecovery(env.DB,user.id,text,today);if(recoveryReply!==null)return recoveryReply;
+  const injuryReply=await answerInjuryConversation(env.DB,user.id,text,today);if(injuryReply!==null)return injuryReply;
   return reportReply(update, env, telegramUserId, text);
 }
 
@@ -280,7 +282,7 @@ async function handleUpdate(update: TelegramUpdate, env: Env): Promise<Response>
     else reply="Фото обрабатывается только с явной подписью: /nutrition для КБЖУ или /labphoto для лабораторного бланка. Без подписи фото не отправляется в Gemini.";
   } else if (text === "/start" || text === "/help" || text === "/menu") {
     showMenu = true;
-    reply = "Команды: /today — тренировка на сегодня, /tomorrow — на завтра, /goal — текущая цель, /confirm — подтвердить отчёт или КБЖУ, /nutrition — подпись к скриншоту FatSecret, /weight 87.5 — аварийная запись веса, /measure — месячные замеры, /progress — тело и питание, /strength — силовая динамика, /cancel — отмена текущего диалога.";
+    reply = "Команды: /today — тренировка на сегодня, /tomorrow — на завтра, /goal — текущая цель, /confirm — подтвердить отчёт или КБЖУ, /nutrition — подпись к скриншоту FatSecret, /weight 87.5 — аварийная запись веса, /measure — месячные замеры, /progress — тело и питание, /strength — силовая динамика, /injuries — травмы, /cancel — отмена текущего диалога.";
   } else if (text === "/confirm") {
     const user = await ensureUser(env.DB, String(message.from.id), env.APP_TIMEZONE || "Europe/Samara");
     const workoutDraft = await loadPendingReportDraft(env.DB, user.id);
@@ -321,6 +323,8 @@ async function handleUpdate(update: TelegramUpdate, env: Env): Promise<Response>
       reply = "Ввод замеров отменён. Незавершённые значения не сохранены.";
     } else if(await cancelRecovery(env.DB,user.id)){
       reply="Чекин восстановления отменён. Решение о разгрузке не менялось.";
+    } else if(await cancelInjuryConversation(env.DB,user.id)){
+      reply="Управление травмами отменено. Данные не изменены.";
     } else {
       reply = await cancelPendingReportDraft(env.DB, user.id) ? "Черновик тренировки отменён." : "Нет ожидающего подтверждения черновика или чекина.";
     }
@@ -341,6 +345,8 @@ async function handleUpdate(update: TelegramUpdate, env: Env): Promise<Response>
     const user=await ensureUser(env.DB,String(message.from.id),env.APP_TIMEZONE||"Europe/Samara");const today=toIsoDate(localDateAt(new Date(),env.APP_TIMEZONE||"Europe/Samara"));reply=await strengthProgressSummary(env.DB,user.id,today);
   } else if(text==="/recovery"){
     const user=await ensureUser(env.DB,String(message.from.id),env.APP_TIMEZONE||"Europe/Samara");reply=await startRecovery(env.DB,user.id);
+  } else if(text==="/injuries"){
+    const user=await ensureUser(env.DB,String(message.from.id),env.APP_TIMEZONE||"Europe/Samara");reply=await startInjuryConversation(env.DB,user.id);
   } else if (text === "/goal") {
     const user = await ensureUser(env.DB, String(message.from.id), env.APP_TIMEZONE || "Europe/Samara");
     const current = await loadCurrentGoal(env.DB, user.id);

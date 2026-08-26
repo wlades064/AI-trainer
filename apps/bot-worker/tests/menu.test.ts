@@ -6,6 +6,7 @@ test("menu buttons map to existing commands", () => {
   assert.equal(commandFromMenuText("🏋️ Сегодня"), "/today");
   assert.equal(commandFromMenuText("📊 Прогресс"), "/progress");
   assert.equal(commandFromMenuText("📈 Силовые"), "/strength");
+  assert.equal(commandFromMenuText("🦴 Травмы"), "/injuries");
   assert.equal(commandFromMenuText("обычный отчёт"), "обычный отчёт");
 });
 

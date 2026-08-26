@@ -1,0 +1,4 @@
+import test from"node:test";import assert from"node:assert/strict";import{parseInjuryAction,parseInjuryStatus,riskTagsForInjury}from"../src/injuries.ts";
+test("injury actions are explicit",()=>{assert.deepEqual(parseInjuryAction("добавить"),{kind:"add"});assert.deepEqual(parseInjuryAction("закрыть 12"),{kind:"close",id:12});assert.equal(parseInjuryAction("удали всё"),null)});
+test("injury status accepts guided answers",()=>{assert.equal(parseInjuryStatus("1"),"active");assert.equal(parseInjuryStatus("восстанавливается"),"recovering");assert.equal(parseInjuryStatus("не знаю"),null)});
+test("only active known areas receive deterministic risk tags",()=>{assert.deepEqual(riskTagsForInjury("правое колено","active"),["knee_load","deep_knee_flexion"]);assert.deepEqual(riskTagsForInjury("оба голеностопа","recovering"),[]);assert.deepEqual(riskTagsForInjury("плечо","active"),[])});
