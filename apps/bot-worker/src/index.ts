@@ -56,6 +56,7 @@ import { formatLabImageDraft, parseLabScreenshot } from "./lab-image.ts";
 import { cancelLabImageDraft, confirmLabImageDraft, findLabImage, pendingLabImageDraft, saveLabImageDraft } from "./lab-image-db.ts";
 import { loadModeForDate, recoveryAssessmentDue } from "./training-load-db.ts";
 import { activeRecoveryStop, answerRecovery, cancelRecovery, startRecovery } from "./recovery-db.ts";
+import { compactStrengthContext, strengthProgressSummary } from "./strength-analytics-db.ts";
 
 interface Env {
   DB: D1Database;
@@ -122,11 +123,12 @@ async function workoutReply(offset: 0 | 1, env: Env, telegramUserId: string): Pr
     return`Перед следующей тренировкой нужна плановая оценка восстановления: завершено минимум четыре тяжёлые недели. После чекина снова нажми «🏋️ Сегодня» или «📅 Завтра».\n\n${question}`;
   }
 
-  const [candidates, restrictions, recentSummary, coachingContext] = await Promise.all([
+  const [candidates, restrictions, recentSummary, coachingContext,strengthContext] = await Promise.all([
     loadExerciseCandidates(env.DB, user.id, training.focus),
     loadActiveRestrictions(env.DB, user.id),
     loadRecentSummary(env.DB, user.id, training.focus),
     loadCompactCoachingContext(env.DB, user.id),
+    compactStrengthContext(env.DB,user.id,training.focus,training.date),
   ]);
   const safe = filterSafeExercises(candidates, restrictions);
   if (safe.allowed.length === 0) {
@@ -145,6 +147,7 @@ async function workoutReply(offset: 0 | 1, env: Env, telegramUserId: string): Pr
         ...GUIDANCE[training.focus],
         ...programmingRules(training.focus, emphasis,loadMode),
         `Контекст цели и восстановления ресурсов: ${coachingContext}. Не компенсируй питание чрезмерным тренировочным объёмом.`,
+        `Фактическая силовая динамика по совместимым типам веса: ${strengthContext}. Используй её как сигнал, но не повышай нагрузку без целевого RIR и стабильной техники.`,
         "Добавки перечислены только как фактический контекст. Не назначай, не отменяй и не меняй их дозировку; не делай медицинских выводов.",
         ...(readiness ? [`Актуальный предтренировочный чекин: ${compactReadiness(readiness)}.`] : []),
       ],
@@ -275,7 +278,7 @@ async function handleUpdate(update: TelegramUpdate, env: Env): Promise<Response>
     else reply="Фото обрабатывается только с явной подписью: /nutrition для КБЖУ или /labphoto для лабораторного бланка. Без подписи фото не отправляется в Gemini.";
   } else if (text === "/start" || text === "/help" || text === "/menu") {
     showMenu = true;
-    reply = "Команды: /today — тренировка на сегодня, /tomorrow — на завтра, /goal — текущая цель, /confirm — подтвердить отчёт или КБЖУ, /nutrition — подпись к скриншоту FatSecret, /weight 87.5 — аварийная запись веса, /measure — месячные замеры, /progress — динамика, /cancel — отмена текущего диалога.";
+    reply = "Команды: /today — тренировка на сегодня, /tomorrow — на завтра, /goal — текущая цель, /confirm — подтвердить отчёт или КБЖУ, /nutrition — подпись к скриншоту FatSecret, /weight 87.5 — аварийная запись веса, /measure — месячные замеры, /progress — тело и питание, /strength — силовая динамика, /cancel — отмена текущего диалога.";
   } else if (text === "/confirm") {
     const user = await ensureUser(env.DB, String(message.from.id), env.APP_TIMEZONE || "Europe/Samara");
     const workoutDraft = await loadPendingReportDraft(env.DB, user.id);
@@ -332,6 +335,8 @@ async function handleUpdate(update: TelegramUpdate, env: Env): Promise<Response>
     const user = await ensureUser(env.DB, String(message.from.id), env.APP_TIMEZONE || "Europe/Samara");
     const today = toIsoDate(localDateAt(new Date(), env.APP_TIMEZONE || "Europe/Samara"));
     reply = await progressSummary(env.DB, user.id, today);
+  } else if(text==="/strength"){
+    const user=await ensureUser(env.DB,String(message.from.id),env.APP_TIMEZONE||"Europe/Samara");const today=toIsoDate(localDateAt(new Date(),env.APP_TIMEZONE||"Europe/Samara"));reply=await strengthProgressSummary(env.DB,user.id,today);
   } else if(text==="/recovery"){
     const user=await ensureUser(env.DB,String(message.from.id),env.APP_TIMEZONE||"Europe/Samara");reply=await startRecovery(env.DB,user.id);
   } else if (text === "/goal") {

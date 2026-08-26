@@ -1,0 +1,4 @@
+import test from"node:test";import assert from"node:assert/strict";import{strengthTrendLines,type StrengthSetRow}from"../src/strength-analytics.ts";
+const row=(date:string,reps:number,weight:number|null,basis="machine_display"):StrengthSetRow=>({local_date:date,focus:"back",exercise_name:"Пуловер",reps,weight_kg:weight,load_basis:basis});
+test("strength trend compares only compatible load bases",()=>{const lines=strengthTrendLines([row("2026-08-26",15,50),row("2026-08-26",15,50),row("2026-08-19",12,43),row("2026-08-12",20,null,"bodyweight")]);assert.equal(lines.length,1);assert.match(lines[0],/максимальный вес \+7 кг/);assert.doesNotMatch(lines[0],/2026-08-12/) });
+test("strength trend reports missing comparison honestly",()=>{const lines=strengthTrendLines([row("2026-08-26",15,50)]);assert.match(lines[0],/нужна ещё одна подтверждённая тренировка/) });
