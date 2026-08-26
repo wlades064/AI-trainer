@@ -1,0 +1,3 @@
+import test from"node:test";import assert from"node:assert/strict";import{parseScheduleAction,parseScheduleDate,parseScheduleFocus,scheduleDateAllowed}from"../src/schedule-management.ts";
+test("schedule dialog accepts guided actions and dates",()=>{assert.equal(parseScheduleAction("перенести"),"move");assert.equal(parseScheduleDate("завтра","2026-08-26"),"2026-08-27");assert.equal(parseScheduleDate("2026-02-30","2026-01-01"),null)});
+test("schedule override is limited and uses known focuses",()=>{assert.equal(parseScheduleFocus("спина"),"back");assert.equal(parseScheduleFocus("руки"),null);assert.equal(scheduleDateAllowed("2026-11-25","2026-08-26"),false)});

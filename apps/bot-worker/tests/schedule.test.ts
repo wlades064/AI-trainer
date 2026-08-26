@@ -18,6 +18,7 @@ test("accepts schedule rules loaded from the database", () => {
   assert.equal(trainingForDate({ year: 2026, month: 8, day: 25 }, tuesdayOnly).focus, "back");
   assert.equal(trainingForDate({ year: 2026, month: 8, day: 24 }, tuesdayOnly).focus, "rest");
 });
+test("one-time override wins without changing base rules",()=>{assert.equal(trainingForDate({year:2026,month:8,day:25},undefined,"back").focus,"back");assert.equal(trainingForDate({year:2026,month:8,day:26},undefined,"rest").focus,"rest")});
 
 test("adds a calendar day across a month boundary", () => {
   assert.deepEqual(addCalendarDays({ year: 2026, month: 8, day: 31 }, 1), { year: 2026, month: 9, day: 1 });

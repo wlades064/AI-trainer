@@ -61,6 +61,7 @@ import { answerInjuryConversation, cancelInjuryConversation, startInjuryConversa
 import { answerReintroductionConversation, cancelReintroductionConversation, startReintroductionConversation } from "./reintroduction-db.ts";
 import { answerExerciseCatalogConversation, cancelExerciseCatalogConversation, startExerciseCatalogConversation } from "./exercise-catalog-db.ts";
 import { answerExerciseAddConversation, cancelExerciseAddConversation } from "./exercise-add-db.ts";
+import { answerScheduleConversation, cancelScheduleConversation, loadScheduleOverride, startScheduleConversation } from "./schedule-management-db.ts";
 
 interface Env {
   DB: D1Database;
@@ -100,7 +101,9 @@ async function workoutReply(offset: 0 | 1, env: Env, telegramUserId: string): Pr
   const user = await ensureUser(env.DB, telegramUserId, timeZone);
   const schedule = await loadSchedule(env.DB, user.id);
   const local = addCalendarDays(localDateAt(new Date(), timeZone), offset);
-  const training = trainingForDate(local, schedule);
+  const localDate=toIsoDate(local);
+  const override=await loadScheduleOverride(env.DB,user.id,localDate);
+  const training = trainingForDate(local, schedule,override);
   if (training.focus === "rest") {
     return `${training.date}: по базовому расписанию день восстановления.`;
   }
@@ -256,6 +259,7 @@ async function freeTextReply(update: TelegramUpdate, env: Env, telegramUserId: s
   const reintroductionReply=await answerReintroductionConversation(env.DB,user.id,text,today);if(reintroductionReply!==null)return reintroductionReply;
   const catalogReply=await answerExerciseCatalogConversation(env.DB,user.id,text);if(catalogReply!==null)return catalogReply;
   const exerciseAddReply=await answerExerciseAddConversation(env.DB,user.id,text);if(exerciseAddReply!==null)return exerciseAddReply;
+  const scheduleReply=await answerScheduleConversation(env.DB,user.id,text,today);if(scheduleReply!==null)return scheduleReply;
   return reportReply(update, env, telegramUserId, text);
 }
 
@@ -300,7 +304,7 @@ async function handleUpdate(update: TelegramUpdate, env: Env): Promise<Response>
     else reply="Фото обрабатывается только с явной подписью: /nutrition для КБЖУ или /labphoto для лабораторного бланка. Без подписи фото не отправляется в Gemini.";
   } else if (text === "/start" || text === "/help" || text === "/menu") {
     showMenu = true;
-    reply = "Команды: /today — тренировка на сегодня, /tomorrow — на завтра, /goal — текущая цель, /confirm — подтвердить отчёт или КБЖУ, /nutrition — подпись к скриншоту FatSecret, /weight 87.5 — аварийная запись веса, /measure — месячные замеры, /progress — тело и питание, /strength — силовая динамика, /injuries — травмы, /reintroductions — возврат упражнений, /exercises — каталог, /cancel — отмена текущего диалога.";
+    reply = "Команды: /today — тренировка на сегодня, /tomorrow — на завтра, /schedule — разовые переносы и отмены, /goal — текущая цель, /confirm — подтвердить отчёт или КБЖУ, /nutrition — подпись к скриншоту FatSecret, /weight 87.5 — аварийная запись веса, /measure — месячные замеры, /progress — тело и питание, /strength — силовая динамика, /injuries — травмы, /reintroductions — возврат упражнений, /exercises — каталог, /cancel — отмена текущего диалога.";
   } else if (text === "/confirm") {
     const user = await ensureUser(env.DB, String(message.from.id), env.APP_TIMEZONE || "Europe/Samara");
     const workoutDraft = await loadPendingReportDraft(env.DB, user.id);
@@ -349,6 +353,8 @@ async function handleUpdate(update: TelegramUpdate, env: Env): Promise<Response>
       reply="Управление каталогом упражнений отменено.";
     } else if(await cancelExerciseAddConversation(env.DB,user.id)){
       reply="Черновик нового упражнения отменён. В каталог ничего не добавлено.";
+    } else if(await cancelScheduleConversation(env.DB,user.id)){
+      reply="Изменение расписания отменено. Расписание не менялось.";
     } else {
       reply = await cancelPendingReportDraft(env.DB, user.id) ? "Черновик тренировки отменён." : "Нет ожидающего подтверждения черновика или чекина.";
     }
@@ -370,11 +376,13 @@ async function handleUpdate(update: TelegramUpdate, env: Env): Promise<Response>
   } else if(text==="/recovery"){
     const user=await ensureUser(env.DB,String(message.from.id),env.APP_TIMEZONE||"Europe/Samara");reply=await startRecovery(env.DB,user.id);
   } else if(text==="/injuries"){
-    const user=await ensureUser(env.DB,String(message.from.id),env.APP_TIMEZONE||"Europe/Samara");await cancelReintroductionConversation(env.DB,user.id);await cancelExerciseCatalogConversation(env.DB,user.id);await cancelExerciseAddConversation(env.DB,user.id);reply=await startInjuryConversation(env.DB,user.id);
+    const user=await ensureUser(env.DB,String(message.from.id),env.APP_TIMEZONE||"Europe/Samara");await cancelReintroductionConversation(env.DB,user.id);await cancelExerciseCatalogConversation(env.DB,user.id);await cancelExerciseAddConversation(env.DB,user.id);await cancelScheduleConversation(env.DB,user.id);reply=await startInjuryConversation(env.DB,user.id);
   } else if(text==="/reintroductions"){
-    const user=await ensureUser(env.DB,String(message.from.id),env.APP_TIMEZONE||"Europe/Samara");await cancelInjuryConversation(env.DB,user.id);await cancelExerciseCatalogConversation(env.DB,user.id);await cancelExerciseAddConversation(env.DB,user.id);reply=await startReintroductionConversation(env.DB,user.id);
+    const user=await ensureUser(env.DB,String(message.from.id),env.APP_TIMEZONE||"Europe/Samara");await cancelInjuryConversation(env.DB,user.id);await cancelExerciseCatalogConversation(env.DB,user.id);await cancelExerciseAddConversation(env.DB,user.id);await cancelScheduleConversation(env.DB,user.id);reply=await startReintroductionConversation(env.DB,user.id);
   } else if(text==="/exercises"){
-    const user=await ensureUser(env.DB,String(message.from.id),env.APP_TIMEZONE||"Europe/Samara");await cancelInjuryConversation(env.DB,user.id);await cancelReintroductionConversation(env.DB,user.id);await cancelExerciseAddConversation(env.DB,user.id);reply=await startExerciseCatalogConversation(env.DB,user.id);
+    const user=await ensureUser(env.DB,String(message.from.id),env.APP_TIMEZONE||"Europe/Samara");await cancelInjuryConversation(env.DB,user.id);await cancelReintroductionConversation(env.DB,user.id);await cancelExerciseAddConversation(env.DB,user.id);await cancelScheduleConversation(env.DB,user.id);reply=await startExerciseCatalogConversation(env.DB,user.id);
+  } else if(text==="/schedule"){
+    const user=await ensureUser(env.DB,String(message.from.id),env.APP_TIMEZONE||"Europe/Samara");await cancelInjuryConversation(env.DB,user.id);await cancelReintroductionConversation(env.DB,user.id);await cancelExerciseCatalogConversation(env.DB,user.id);await cancelExerciseAddConversation(env.DB,user.id);const today=toIsoDate(localDateAt(new Date(),env.APP_TIMEZONE||"Europe/Samara"));reply=await startScheduleConversation(env.DB,user.id,today);
   } else if (text === "/goal") {
     const user = await ensureUser(env.DB, String(message.from.id), env.APP_TIMEZONE || "Europe/Samara");
     const current = await loadCurrentGoal(env.DB, user.id);

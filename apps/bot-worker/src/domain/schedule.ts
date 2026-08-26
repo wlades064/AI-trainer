@@ -55,8 +55,8 @@ export function weekday(date: LocalDate): number {
   return new Date(Date.UTC(date.year, date.month - 1, date.day)).getUTCDay();
 }
 
-export function trainingForDate(date: LocalDate, rules: ScheduleRule[] = DEFAULT_SCHEDULE): ScheduledTraining {
-  const focus = rules.find((rule) => rule.weekday === weekday(date))?.focus ?? "rest";
+export function trainingForDate(date: LocalDate, rules: ScheduleRule[] = DEFAULT_SCHEDULE, overrideFocus?: TrainingFocus | null): ScheduledTraining {
+  const focus = overrideFocus ?? rules.find((rule) => rule.weekday === weekday(date))?.focus ?? "rest";
   return { date: toIsoDate(date), focus, label: LABELS[focus] };
 }
 
