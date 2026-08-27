@@ -28,6 +28,15 @@ export async function sendTelegramMessage(token: string, chatId: number, text: s
   if (!response.ok) throw new Error(`Telegram sendMessage failed: ${response.status}`);
 }
 
+export async function sendTelegramDocument(token: string, chatId: number, filename: string, content: string, caption: string, fetchImpl: typeof fetch = fetch): Promise<void> {
+  const form = new FormData();
+  form.set("chat_id", String(chatId));
+  form.set("caption", caption);
+  form.set("document", new Blob([content], { type: "application/json;charset=utf-8" }), filename);
+  const response = await fetchImpl(`https://api.telegram.org/bot${token}/sendDocument`, { method: "POST", body: form });
+  if (!response.ok) throw new Error(`Telegram sendDocument failed: ${response.status}`);
+}
+
 function bytesToBase64(buffer: ArrayBuffer): string {
   const bytes = new Uint8Array(buffer);
   let binary = "";

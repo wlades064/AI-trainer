@@ -16,7 +16,7 @@ import {
 import { filterSafeExercises } from "./domain/safety.ts";
 import { programmingRules } from "./domain/programming.ts";
 import { generateWorkout, type GeneratedWorkout } from "./gemini.ts";
-import { downloadTelegramPhoto, downloadTelegramTextDocument, downloadTelegramVoice, selectEfficientPhoto, sendTelegramMessage, type TelegramUpdate } from "./telegram.ts";
+import { downloadTelegramPhoto, downloadTelegramTextDocument, downloadTelegramVoice, selectEfficientPhoto, sendTelegramDocument, sendTelegramMessage, type TelegramUpdate } from "./telegram.ts";
 import {
   cancelPendingReportDraft,
   confirmPendingReportDraft,
@@ -69,6 +69,8 @@ import { formatNutritionCsvDraft, parseNutritionCsv } from "./nutrition-csv.ts";
 import { cancelNutritionCsv, confirmNutritionCsv, findNutritionCsv, pendingNutritionCsv, saveNutritionCsvDraft } from "./nutrition-csv-db.ts";
 import { aiUsageLimitMessage, formatAiUsageOverview, parseAiUsageLimits } from "./ai-usage.ts";
 import { loadAiUsageOverview } from "./ai-usage-db.ts";
+import { formatExportSize, serializePersonalDataExport } from "./data-export.ts";
+import { loadPersonalDataExport } from "./data-export-db.ts";
 
 interface Env {
   DB: D1Database;
@@ -98,6 +100,24 @@ async function currentAiUsage(env: Env, userId: number) {
 async function aiUsageBlock(env: Env, userId: number): Promise<string | null> {
   const { overview, limits } = await currentAiUsage(env, userId);
   return aiUsageLimitMessage(overview.today, limits);
+}
+
+async function sendPersonalExport(env: Env, telegramUserId: string, chatId: number): Promise<string> {
+  const timezone = env.APP_TIMEZONE || "Europe/Samara";
+  const user = await ensureUser(env.DB, telegramUserId, timezone);
+  const data = await loadPersonalDataExport(env.DB, user.id, new Date().toISOString(), timezone);
+  const file = serializePersonalDataExport(data);
+  if (file.byteLength > 8 * 1024 * 1024) {
+    return `Экспорт получился слишком большим для безопасной отправки Worker: ${formatExportSize(file.byteLength)}. Данные не удалены; используй локальную резервную копию.`;
+  }
+  await sendTelegramDocument(
+    env.TELEGRAM_BOT_TOKEN,
+    chatId,
+    file.filename,
+    file.content,
+    "Персональный экспорт AI-тренера. Файл содержит конфиденциальные данные о здоровье — не пересылай его посторонним.",
+  );
+  return `Экспорт отправлен: ${file.filename}, ${formatExportSize(file.byteLength)}. Gemini не использовался.`;
 }
 
 function formatWorkout(date: string, workout: GeneratedWorkout, reused = false): string {
@@ -412,7 +432,7 @@ async function handleUpdate(update: TelegramUpdate, env: Env): Promise<Response>
     else reply="Фото обрабатывается только с явной подписью: /nutrition для КБЖУ или /labphoto для лабораторного бланка. Без подписи фото не отправляется в Gemini.";
   } else if (text === "/start" || text === "/help" || text === "/menu") {
     showMenu = true;
-    reply = "Команды: /today — тренировка на сегодня, /tomorrow — на завтра, /schedule — разовые переносы и отмены, /reminders — напоминания о весе и замерах, /review — итоги за 28 дней, /usage — расход и дневной предел Gemini, /goal — текущая цель, /confirm — подтвердить отчёт или КБЖУ, /fatsecret — подпись к пользовательскому CSV, /nutrition — подпись к аварийному скриншоту FatSecret, /weight 87.5 — аварийная запись веса, /measure — месячные замеры, /progress — тело и питание, /strength — силовая динамика, /injuries — травмы, /reintroductions — возврат упражнений, /exercises — каталог, /cancel — отмена текущего диалога. Голосовое сообщение до 2 минут разбирается как фактический отчёт к плану за сегодня или вчера.";
+    reply = "Команды: /today — тренировка на сегодня, /tomorrow — на завтра, /schedule — разовые переносы и отмены, /reminders — напоминания о весе и замерах, /review — итоги за 28 дней, /usage — расход и дневной предел Gemini, /export — персональный архив, /goal — текущая цель, /confirm — подтвердить отчёт или КБЖУ, /fatsecret — подпись к пользовательскому CSV, /nutrition — подпись к аварийному скриншоту FatSecret, /weight 87.5 — аварийная запись веса, /measure — месячные замеры, /progress — тело и питание, /strength — силовая динамика, /injuries — травмы, /reintroductions — возврат упражнений, /exercises — каталог, /cancel — отмена текущего диалога. Голосовое сообщение до 2 минут разбирается как фактический отчёт к плану за сегодня или вчера.";
   } else if (text === "/confirm") {
     const user = await ensureUser(env.DB, String(message.from.id), env.APP_TIMEZONE || "Europe/Samara");
     const workoutDraft = await loadPendingReportDraft(env.DB, user.id);
@@ -489,6 +509,10 @@ async function handleUpdate(update: TelegramUpdate, env: Env): Promise<Response>
     const user=await ensureUser(env.DB,String(message.from.id),env.APP_TIMEZONE||"Europe/Samara");reply=await progressReview(env.DB,user.id,localDateAt(new Date(),env.APP_TIMEZONE||"Europe/Samara"));
   } else if(text==="/usage"){
     const user=await ensureUser(env.DB,String(message.from.id),env.APP_TIMEZONE||"Europe/Samara");const usage=await currentAiUsage(env,user.id);reply=formatAiUsageOverview(usage.overview,usage.limits);
+  } else if(text==="/export"){
+    reply="Экспорт содержит историю тренировок, питание, вес, замеры, травмы, анализы и другие персональные данные. Он будет отправлен в этот Telegram-чат как JSON-файл. Если действительно хочешь получить архив, отправь /export_confirm. Gemini не используется.";
+  } else if(text==="/export_confirm"){
+    reply=await sendPersonalExport(env,String(message.from.id),message.chat.id);
   } else if(text==="/strength"){
     const user=await ensureUser(env.DB,String(message.from.id),env.APP_TIMEZONE||"Europe/Samara");const today=toIsoDate(localDateAt(new Date(),env.APP_TIMEZONE||"Europe/Samara"));reply=await strengthProgressSummary(env.DB,user.id,today);
   } else if(text==="/recovery"){

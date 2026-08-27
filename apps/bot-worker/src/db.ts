@@ -10,7 +10,10 @@ export interface D1PreparedStatement {
   all<T>(): Promise<D1Result<T>>;
   run(): Promise<unknown>;
 }
-export interface D1Database { prepare(query: string): D1PreparedStatement }
+export interface D1Database {
+  prepare(query: string): D1PreparedStatement;
+  batch?<T>(statements: D1PreparedStatement[]): Promise<D1Result<T>[]>;
+}
 
 export interface UserRecord { id: number; telegram_user_id: string; timezone: string }
 
