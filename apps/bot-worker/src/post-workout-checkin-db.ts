@@ -4,6 +4,8 @@ import {
   invalidAnswerMessage,
   parsePainAnswer,
   parseScaleAnswer,
+  parseTechniqueAnswer,
+  techniqueQuestion,
   type PostWorkoutCheckinStep,
 } from "./post-workout-checkin.ts";
 
@@ -14,6 +16,8 @@ interface PendingCheckinRow {
   session_effort: number | null;
   last_set_rir: number | null;
   pain_json: string | null;
+  wellbeing: number | null;
+  technique_stable: number | null;
 }
 
 export async function startPostWorkoutCheckin(db: D1Database, userId: number, sessionId: number): Promise<string> {
@@ -29,6 +33,7 @@ export async function startPostWorkoutCheckin(db: D1Database, userId: number, se
        last_set_rir = NULL,
        pain_json = NULL,
        wellbeing = NULL,
+       technique_stable = NULL,
        status = 'pending',
        expires_at = datetime('now', '+2 days'),
        updated_at = CURRENT_TIMESTAMP,
@@ -39,7 +44,7 @@ export async function startPostWorkoutCheckin(db: D1Database, userId: number, se
 
 async function loadPendingCheckin(db: D1Database, userId: number): Promise<PendingCheckinRow | null> {
   return db.prepare(
-    `SELECT id, session_id, step, session_effort, last_set_rir, pain_json
+    `SELECT id, session_id, step, session_effort, last_set_rir, pain_json, wellbeing, technique_stable
      FROM post_workout_checkins
      WHERE user_id = ? AND status = 'pending' AND expires_at > CURRENT_TIMESTAMP
      ORDER BY updated_at DESC LIMIT 1`,
@@ -48,7 +53,7 @@ async function loadPendingCheckin(db: D1Database, userId: number): Promise<Pendi
 
 export async function pendingPostWorkoutQuestion(db: D1Database, userId: number): Promise<string | null> {
   const pending = await loadPendingCheckin(db, userId);
-  return pending ? checkinQuestion(pending.step) : null;
+  return pending ? (pending.step === 4 && pending.wellbeing !== null ? techniqueQuestion() : checkinQuestion(pending.step)) : null;
 }
 
 export async function cancelPostWorkoutCheckin(db: D1Database, userId: number): Promise<boolean> {
@@ -95,34 +100,43 @@ export async function answerPostWorkoutCheckin(
     return checkinQuestion(4);
   }
 
-  const wellbeing = parseScaleAnswer(text, 1, 5);
-  if (wellbeing === null) return `${invalidAnswerMessage(4)}\n\n${checkinQuestion(4)}`;
+  if (pending.wellbeing === null) {
+    const wellbeing = parseScaleAnswer(text, 1, 5);
+    if (wellbeing === null) return `${invalidAnswerMessage(4)}\n\n${checkinQuestion(4)}`;
+    await db.prepare("UPDATE post_workout_checkins SET wellbeing = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?")
+      .bind(wellbeing, pending.id).run();
+    return techniqueQuestion();
+  }
+  const techniqueStable = parseTechniqueAnswer(text);
+  if (techniqueStable === null) return `Ответь «да» или «нет».\n\n${techniqueQuestion()}`;
   if (pending.session_effort === null || pending.last_set_rir === null || !pending.pain_json) {
     throw new Error("Чекин повреждён: отсутствуют обязательные ответы");
   }
   await db.prepare(
     `UPDATE workout_sessions SET
-       session_effort = ?, last_set_rir = ?, pain_json = ?, post_workout_wellbeing = ?, recovery_checkin_at = CURRENT_TIMESTAMP
+       session_effort = ?, last_set_rir = ?, pain_json = ?, post_workout_wellbeing = ?, technique_stable = ?, recovery_checkin_at = CURRENT_TIMESTAMP
      WHERE id = ? AND user_id = ? AND confirmed_at IS NOT NULL`,
   ).bind(
     pending.session_effort,
     pending.last_set_rir,
     pending.pain_json,
-    wellbeing,
+    pending.wellbeing,
+    Number(techniqueStable),
     pending.session_id,
     userId,
   ).run();
   await db.prepare(
-    `UPDATE post_workout_checkins SET wellbeing = ?, status = 'completed',
+    `UPDATE post_workout_checkins SET technique_stable = ?, status = 'completed',
        updated_at = CURRENT_TIMESTAMP, completed_at = CURRENT_TIMESTAMP
      WHERE id = ? AND status = 'pending'`,
-  ).bind(wellbeing, pending.id).run();
+  ).bind(Number(techniqueStable), pending.id).run();
   const pain = JSON.parse(pending.pain_json) as { anyPain?: boolean };
   return [
     "Чекин сохранён и будет учтён в следующей тренировке:",
     `• тяжесть ${pending.session_effort}/10`,
     `• RIR ${pending.last_set_rir}`,
     `• боль: ${pain.anyPain ? "указана" : "нет"}`,
-    `• самочувствие ${wellbeing}/5`,
+    `• самочувствие ${pending.wellbeing}/5`,
+    `• техника: ${techniqueStable ? "стабильная" : "нестабильная"}`,
   ].join("\n");
 }

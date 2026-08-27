@@ -73,6 +73,8 @@ import { formatExportSize, serializePersonalDataExport } from "./data-export.ts"
 import { loadPersonalDataExport } from "./data-export-db.ts";
 import { dataStatus } from "./data-status-db.ts";
 import { programStatus } from "./program-status-db.ts";
+import { compactExerciseProgression, exerciseProgressionSummary } from "./exercise-progression-db.ts";
+import { applyProgressionGuard } from "./exercise-progression.ts";
 
 interface Env {
   DB: D1Database;
@@ -175,12 +177,13 @@ async function workoutReply(offset: 0 | 1, env: Env, telegramUserId: string): Pr
     return`Перед следующей тренировкой нужна оценка восстановления: ${reason}. После чекина снова нажми «🏋️ Сегодня» или «📅 Завтра».\n\n${question}`;
   }
 
-  const [candidates, restrictions, recentSummary, coachingContext,strengthContext] = await Promise.all([
+  const [candidates, restrictions, recentSummary, coachingContext,strengthContext,progression] = await Promise.all([
     loadExerciseCandidates(env.DB, user.id, training.focus),
     loadActiveRestrictions(env.DB, user.id),
     loadRecentSummary(env.DB, user.id, training.focus),
     loadCompactCoachingContext(env.DB, user.id),
     compactStrengthContext(env.DB,user.id,training.focus,training.date),
+    compactExerciseProgression(env.DB,user.id,training.focus),
   ]);
   const safe = filterSafeExercises(candidates, restrictions);
   if (safe.allowed.length === 0) {
@@ -211,11 +214,13 @@ async function workoutReply(offset: 0 | 1, env: Env, telegramUserId: string): Pr
         ...(rare.length ? [`Редкие упражнения: ${rare.join(", ")}. Не выбирай их без конкретной причины замены или вариативности.`] : []),
         `Контекст цели и восстановления ресурсов: ${coachingContext}. Не компенсируй питание чрезмерным тренировочным объёмом.`,
         `Фактическая силовая динамика по совместимым типам веса: ${strengthContext}. Используй её как сигнал, но не повышай нагрузку без целевого RIR и стабильной техники.`,
+        `Детерминированный паспорт прогрессии обязателен: ${progression.context}. Не предлагай повышение веса вопреки этому решению.`,
         "Добавки перечислены только как фактический контекст. Не назначай, не отменяй и не меняй их дозировку; не делай медицинских выводов.",
         ...(readiness ? [`Актуальный предтренировочный чекин: ${compactReadiness(readiness)}.`] : []),
       ],
     });
-    if (testing.length && !generated.workout.exercises.some((exercise) => exercise.name === testing[0].name)) {
+    const workout = applyProgressionGuard(generated.workout, progression.assessments);
+    if (testing.length && !workout.exercises.some((exercise) => exercise.name === testing[0].name)) {
       throw new Error("Gemini пропустил обязательное тестируемое упражнение");
     }
     await saveGeneratedPlan(
@@ -226,11 +231,11 @@ async function workoutReply(offset: 0 | 1, env: Env, telegramUserId: string): Pr
       emphasis,
       loadMode,
       env.GEMINI_MODEL,
-      generated.workout,
+      workout,
       generated.inputTokens,
       generated.outputTokens,
     );
-    return formatWorkout(training.date, generated.workout);
+    return formatWorkout(training.date, workout);
   } catch (error) {
     await env.DB.prepare("INSERT INTO system_events(event_type, payload_json) VALUES ('gemini_generation_failed', ?)")
       .bind(JSON.stringify({ date: training.date, focus: training.focus, error: error instanceof Error ? error.message : "unknown" }))
@@ -434,7 +439,7 @@ async function handleUpdate(update: TelegramUpdate, env: Env): Promise<Response>
     else reply="Фото обрабатывается только с явной подписью: /nutrition для КБЖУ или /labphoto для лабораторного бланка. Без подписи фото не отправляется в Gemini.";
   } else if (text === "/start" || text === "/help" || text === "/menu") {
     showMenu = true;
-    reply = "Команды: /today — тренировка на сегодня, /tomorrow — на завтра, /program — состояние тренировочного цикла, /schedule — разовые переносы и отмены, /reminders — напоминания о весе и замерах, /review — итоги за 28 дней, /status — полнота и свежесть данных, /usage — расход и дневной предел Gemini, /export — персональный архив, /goal — текущая цель, /confirm — подтвердить отчёт или КБЖУ, /fatsecret — подпись к пользовательскому CSV, /nutrition — подпись к аварийному скриншоту FatSecret, /weight 87.5 — аварийная запись веса, /measure — месячные замеры, /progress — тело и питание, /strength — силовая динамика, /injuries — травмы, /reintroductions — возврат упражнений, /exercises — каталог, /cancel — отмена текущего диалога. Голосовое сообщение до 2 минут разбирается как фактический отчёт к плану за сегодня или вчера.";
+    reply = "Команды: /today — тренировка на сегодня, /tomorrow — на завтра, /program — состояние тренировочного цикла, /progression — паспорт прогрессии упражнений, /schedule — разовые переносы и отмены, /reminders — напоминания о весе и замерах, /review — итоги за 28 дней, /status — полнота и свежесть данных, /usage — расход и дневной предел Gemini, /export — персональный архив, /goal — текущая цель, /confirm — подтвердить отчёт или КБЖУ, /fatsecret — подпись к пользовательскому CSV, /nutrition — подпись к аварийному скриншоту FatSecret, /weight 87.5 — аварийная запись веса, /measure — месячные замеры, /progress — тело и питание, /strength — силовая динамика, /injuries — травмы, /reintroductions — возврат упражнений, /exercises — каталог, /cancel — отмена текущего диалога. Голосовое сообщение до 2 минут разбирается как фактический отчёт к плану за сегодня или вчера.";
   } else if (text === "/confirm") {
     const user = await ensureUser(env.DB, String(message.from.id), env.APP_TIMEZONE || "Europe/Samara");
     const workoutDraft = await loadPendingReportDraft(env.DB, user.id);
@@ -511,6 +516,8 @@ async function handleUpdate(update: TelegramUpdate, env: Env): Promise<Response>
     const user=await ensureUser(env.DB,String(message.from.id),env.APP_TIMEZONE||"Europe/Samara");reply=await progressReview(env.DB,user.id,localDateAt(new Date(),env.APP_TIMEZONE||"Europe/Samara"));
   } else if(text==="/program"){
     const user=await ensureUser(env.DB,String(message.from.id),env.APP_TIMEZONE||"Europe/Samara");const today=toIsoDate(localDateAt(new Date(),env.APP_TIMEZONE||"Europe/Samara"));reply=await programStatus(env.DB,user.id,today);
+  } else if(text==="/progression"){
+    const user=await ensureUser(env.DB,String(message.from.id),env.APP_TIMEZONE||"Europe/Samara");reply=await exerciseProgressionSummary(env.DB,user.id);
   } else if(text==="/status"){
     const user=await ensureUser(env.DB,String(message.from.id),env.APP_TIMEZONE||"Europe/Samara");const today=toIsoDate(localDateAt(new Date(),env.APP_TIMEZONE||"Europe/Samara"));reply=await dataStatus(env.DB,user.id,today);
   } else if(text==="/usage"){

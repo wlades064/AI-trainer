@@ -9,14 +9,25 @@ export interface PainAnswer {
 export function checkinQuestion(step: PostWorkoutCheckinStep): string {
   switch (step) {
     case 1:
-      return "Чекин 1/4. Насколько тяжёлой была тренировка по шкале 1–10?";
+      return "Чекин 1/5. Насколько тяжёлой была тренировка по шкале 1–10?";
     case 2:
-      return "Чекин 2/4. Сколько повторений оставалось в запасе в последних рабочих подходах (RIR 0–10)?";
+      return "Чекин 2/5. Сколько повторений оставалось в запасе в последних рабочих подходах (RIR 0–10)?";
     case 3:
-      return "Чекин 3/4. Была боль или неприятные ощущения? Ответь «нет» либо укажи область, уровень 0–10 и краткое описание.";
+      return "Чекин 3/5. Была боль или неприятные ощущения? Ответь «нет» либо укажи область, уровень 0–10 и краткое описание.";
     case 4:
-      return "Чекин 4/4. Как общее самочувствие после тренировки по шкале 1–5?";
+      return "Чекин 4/5. Как общее самочувствие после тренировки по шкале 1–5?";
   }
+}
+
+export function techniqueQuestion(): string {
+  return "Чекин 5/5. Техника в рабочих подходах оставалась стабильной? Ответь «да» или «нет».";
+}
+
+export function parseTechniqueAnswer(text: string): boolean | null {
+  const normalized = text.trim().toLocaleLowerCase("ru-RU").replace(/[.!]+$/g, "").trim();
+  if (/^(да|стабильная|стабильно|техника стабильная|без нарушений)$/.test(normalized)) return true;
+  if (/^(нет|нестабильная|нестабильно|техника поплыла|были нарушения)$/.test(normalized)) return false;
+  return null;
 }
 
 export function parseScaleAnswer(text: string, minimum: number, maximum: number): number | null {

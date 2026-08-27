@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { checkinQuestion, parsePainAnswer, parseScaleAnswer } from "../src/post-workout-checkin.ts";
+import { checkinQuestion, parsePainAnswer, parseScaleAnswer, parseTechniqueAnswer, techniqueQuestion } from "../src/post-workout-checkin.ts";
 
 test("checkin accepts compact integer scale answers", () => {
   assert.equal(parseScaleAnswer("8", 1, 10), 8);
@@ -20,9 +20,13 @@ test("pain answer distinguishes no pain from described symptoms", () => {
   assert.equal(parsePainAnswer("да"), null);
 });
 
-test("all four checkin questions are explicit and token-free", () => {
+test("all five checkin questions are explicit and token-free", () => {
   assert.match(checkinQuestion(1), /1–10/);
   assert.match(checkinQuestion(2), /RIR 0–10/);
   assert.match(checkinQuestion(3), /область/);
   assert.match(checkinQuestion(4), /1–5/);
+  assert.match(techniqueQuestion(), /да.*нет/);
+  assert.equal(parseTechniqueAnswer("да"), true);
+  assert.equal(parseTechniqueAnswer("нет"), false);
+  assert.equal(parseTechniqueAnswer("наверное"), null);
 });
