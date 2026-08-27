@@ -23,6 +23,10 @@ htmlcov/
 *.p12
 *.pfx
 *.aitbackup
+*.aitbackup.sha256
+*.aitbackup.verified.json
+*.dpapi
+.backup-verify-*/
 data/
 backups/
 node_modules/
