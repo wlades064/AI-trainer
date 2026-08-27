@@ -27,6 +27,7 @@ export async function loadDataStatus(db: D1Database, userId: number, today: stri
     db.prepare("SELECT SUM(CASE WHEN status='active' THEN 1 ELSE 0 END) active,SUM(CASE WHEN status='recovering' THEN 1 ELSE 0 END) recovering FROM injury_episodes WHERE user_id=? AND status IN('active','recovering')").bind(userId),
     db.prepare("SELECT COUNT(*) active FROM supplements WHERE user_id=? AND status='active' AND starts_on<=? AND (ends_on IS NULL OR ends_on>=?)").bind(userId, today, today),
     db.prepare("SELECT MAX(collected_on) latest_date,COUNT(*) active_count FROM lab_results WHERE user_id=? AND status='active' AND collected_on<=?").bind(userId, today),
+    db.prepare("SELECT MAX(substr(COALESCE(observed_end,observed_start),1,10)) latest_date,COUNT(DISTINCT metric) metric_count FROM health_observations WHERE user_id=? AND substr(observed_start,1,10)<=?").bind(userId, today),
     db.prepare("SELECT COUNT(*) active FROM external_connections WHERE user_id=? AND status IN('active','connected')").bind(userId),
   ];
   const results = db.batch
@@ -42,7 +43,8 @@ export async function loadDataStatus(db: D1Database, userId: number, today: stri
   const injuries = first(results, 7);
   const supplements = first(results, 8);
   const labs = first(results, 9);
-  const connections = first(results, 10);
+  const wearable = first(results, 10);
+  const connections = first(results, 11);
   return {
     today,
     goal: text(goal.goal_type) ? { type: text(goal.goal_type)!, description: text(goal.description) } : null,
@@ -54,6 +56,7 @@ export async function loadDataStatus(db: D1Database, userId: number, today: stri
     injuries: { active: number(injuries.active), recovering: number(injuries.recovering) },
     activeSupplements: number(supplements.active),
     labs: { latestDate: text(labs.latest_date), activeCount: number(labs.active_count) },
+    wearable: { latestDate: text(wearable.latest_date), metricCount: number(wearable.metric_count) },
     activeConnections: number(connections.active),
   };
 }

@@ -9,6 +9,7 @@ export interface DataStatusSnapshot {
   injuries: { active: number; recovering: number };
   activeSupplements: number;
   labs: { latestDate: string | null; activeCount: number };
+  wearable: { latestDate: string | null; metricCount: number };
   activeConnections: number;
 }
 
@@ -59,6 +60,7 @@ export function formatDataStatus(value: DataStatusSnapshot): string {
     `• травмы: ${injuryTotal ? `активных ${value.injuries.active}, восстанавливающихся ${value.injuries.recovering}` : "активных ограничений нет"}`,
     `• добавки: активных ${value.activeSupplements}`,
     `• анализы: ${value.labs.activeCount} показателей; последние — ${dated(value.labs.latestDate, value.today)}`,
+    `• носимые показатели: ${value.wearable.metricCount ? `${value.wearable.metricCount} типов; последние — ${dated(value.wearable.latestDate, value.today)}` : "данных пока нет"}`,
     `• внешние подключения: активных ${value.activeConnections}`,
   ];
 

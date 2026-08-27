@@ -15,6 +15,7 @@ const complete: DataStatusSnapshot = {
   injuries: { active: 1, recovering: 1 },
   activeSupplements: 2,
   labs: { latestDate: "2026-08-10", activeCount: 12 },
+  wearable: { latestDate: null, metricCount: 0 },
   activeConnections: 0,
 };
 
@@ -24,6 +25,7 @@ test("data pulse reports coverage without claiming medical interpretation", () =
   assert.match(text, /питание: 7\/7 дней и 24\/28 дней/);
   assert.match(text, /источник: экспорт FatSecret/);
   assert.match(text, /травмы: активных 1, восстанавливающихся 1/);
+  assert.match(text, /носимые показатели: данных пока нет/);
   assert.match(text, /базовых данных достаточно/);
   assert.match(text, /не медицинская интерпретация/);
   assert.match(text, /Gemini не использовался/);
@@ -68,8 +70,8 @@ test("data pulse batches its read-only database snapshot", async () => {
     },
   };
   const result = await loadDataStatus(db, 1, "2026-08-27");
-  assert.equal(prepared, 11);
-  assert.equal(batchSize, 11);
+  assert.equal(prepared, 12);
+  assert.equal(batchSize, 12);
   assert.equal(result.today, "2026-08-27");
   assert.equal(result.nutrition.count7, 0);
   assert.equal(result.goal, null);

@@ -9,8 +9,8 @@ $ErrorActionPreference = 'Stop'
 $root = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))
 $cycleScript = Join-Path $PSScriptRoot 'run-backup-cycle.ps1'
 if (-not (Test-Path -LiteralPath $cycleScript -PathType Leaf)) { throw 'Сценарий резервирования не найден.' }
-$powershell = Join-Path $PSHOME 'powershell.exe'
-if (-not (Test-Path -LiteralPath $powershell -PathType Leaf)) { $powershell = (Get-Command powershell.exe).Source }
+$modernPowerShell = Get-Command pwsh.exe -ErrorAction SilentlyContinue
+$powershell = if ($modernPowerShell) { $modernPowerShell.Source } else { (Get-Command powershell.exe).Source }
 
 $parts = $DailyAt.Split(':')
 $at = [DateTime]::Today.AddHours([int]$parts[0]).AddMinutes([int]$parts[1])

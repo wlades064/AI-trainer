@@ -35,6 +35,7 @@ export const PERSONAL_EXPORT_QUERIES: readonly ExportQuery[] = [
   { section: "supplements", sql: "SELECT * FROM supplements WHERE user_id=? ORDER BY starts_on,id" },
   { section: "lab_results", sql: "SELECT * FROM lab_results WHERE user_id=? ORDER BY collected_on,marker_name,id" },
   { section: "lab_image_imports", sql: "SELECT * FROM lab_import_drafts WHERE user_id=? ORDER BY created_at,id" },
+  { section: "health_observations", sql: "SELECT * FROM health_observations WHERE user_id=? ORDER BY observed_start,id" },
   { section: "equipment", sql: "SELECT * FROM equipment_items WHERE user_id=? ORDER BY id" },
   { section: "exercise_settings", sql: "SELECT * FROM user_exercise_settings WHERE user_id=? ORDER BY exercise_id" },
   { section: "training_preferences", sql: "SELECT * FROM training_preferences WHERE user_id=? ORDER BY preference_key" },

@@ -22,6 +22,7 @@ test("personal export excludes secrets and global webhook internals", () => {
   assert.ok(PERSONAL_EXPORT_QUERIES.some((query) => query.section === "workout_sessions"));
   assert.ok(PERSONAL_EXPORT_QUERIES.some((query) => query.section === "nutrition_days"));
   assert.ok(PERSONAL_EXPORT_QUERIES.some((query) => query.section === "lab_results"));
+  assert.ok(PERSONAL_EXPORT_QUERIES.some((query) => query.section === "health_observations"));
 });
 
 test("export size is readable", () => {
