@@ -63,6 +63,7 @@ import { answerExerciseCatalogConversation, cancelExerciseCatalogConversation, s
 import { answerExerciseAddConversation, cancelExerciseAddConversation } from "./exercise-add-db.ts";
 import { answerScheduleConversation, cancelScheduleConversation, loadScheduleOverride, startScheduleConversation } from "./schedule-management-db.ts";
 import { answerReminderConversation, cancelReminderConversation, runDueReminders, startReminderConversation } from "./reminders-db.ts";
+import { progressReview } from "./progress-review-db.ts";
 
 interface Env {
   DB: D1Database;
@@ -306,7 +307,7 @@ async function handleUpdate(update: TelegramUpdate, env: Env): Promise<Response>
     else reply="Фото обрабатывается только с явной подписью: /nutrition для КБЖУ или /labphoto для лабораторного бланка. Без подписи фото не отправляется в Gemini.";
   } else if (text === "/start" || text === "/help" || text === "/menu") {
     showMenu = true;
-    reply = "Команды: /today — тренировка на сегодня, /tomorrow — на завтра, /schedule — разовые переносы и отмены, /reminders — напоминания о весе и замерах, /goal — текущая цель, /confirm — подтвердить отчёт или КБЖУ, /nutrition — подпись к скриншоту FatSecret, /weight 87.5 — аварийная запись веса, /measure — месячные замеры, /progress — тело и питание, /strength — силовая динамика, /injuries — травмы, /reintroductions — возврат упражнений, /exercises — каталог, /cancel — отмена текущего диалога.";
+    reply = "Команды: /today — тренировка на сегодня, /tomorrow — на завтра, /schedule — разовые переносы и отмены, /reminders — напоминания о весе и замерах, /review — итоги за 28 дней, /goal — текущая цель, /confirm — подтвердить отчёт или КБЖУ, /nutrition — подпись к скриншоту FatSecret, /weight 87.5 — аварийная запись веса, /measure — месячные замеры, /progress — тело и питание, /strength — силовая динамика, /injuries — травмы, /reintroductions — возврат упражнений, /exercises — каталог, /cancel — отмена текущего диалога.";
   } else if (text === "/confirm") {
     const user = await ensureUser(env.DB, String(message.from.id), env.APP_TIMEZONE || "Europe/Samara");
     const workoutDraft = await loadPendingReportDraft(env.DB, user.id);
@@ -375,6 +376,8 @@ async function handleUpdate(update: TelegramUpdate, env: Env): Promise<Response>
     const user = await ensureUser(env.DB, String(message.from.id), env.APP_TIMEZONE || "Europe/Samara");
     const today = toIsoDate(localDateAt(new Date(), env.APP_TIMEZONE || "Europe/Samara"));
     reply = await progressSummary(env.DB, user.id, today);
+  } else if(text==="/review"){
+    const user=await ensureUser(env.DB,String(message.from.id),env.APP_TIMEZONE||"Europe/Samara");reply=await progressReview(env.DB,user.id,localDateAt(new Date(),env.APP_TIMEZONE||"Europe/Samara"));
   } else if(text==="/strength"){
     const user=await ensureUser(env.DB,String(message.from.id),env.APP_TIMEZONE||"Europe/Samara");const today=toIsoDate(localDateAt(new Date(),env.APP_TIMEZONE||"Europe/Samara"));reply=await strengthProgressSummary(env.DB,user.id,today);
   } else if(text==="/recovery"){
