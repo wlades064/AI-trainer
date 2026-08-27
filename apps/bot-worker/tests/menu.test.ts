@@ -12,6 +12,7 @@ test("menu buttons map to existing commands", () => {
   assert.equal(commandFromMenuText("🗓 Расписание"), "/schedule");
   assert.equal(commandFromMenuText("⏰ Напоминания"), "/reminders");
   assert.equal(commandFromMenuText("🧭 Итоги"), "/review");
+  assert.equal(commandFromMenuText("🧠 Программа"), "/program");
   assert.equal(commandFromMenuText("📋 Данные"), "/status");
   assert.equal(commandFromMenuText("🤖 ИИ-лимит"), "/usage");
   assert.equal(commandFromMenuText("📦 Экспорт"), "/export");
