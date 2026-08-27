@@ -16,16 +16,17 @@ import {
 import { filterSafeExercises } from "./domain/safety.ts";
 import { programmingRules } from "./domain/programming.ts";
 import { generateWorkout, type GeneratedWorkout } from "./gemini.ts";
-import { downloadTelegramPhoto, downloadTelegramTextDocument, selectEfficientPhoto, sendTelegramMessage, type TelegramUpdate } from "./telegram.ts";
+import { downloadTelegramPhoto, downloadTelegramTextDocument, downloadTelegramVoice, selectEfficientPhoto, sendTelegramMessage, type TelegramUpdate } from "./telegram.ts";
 import {
   cancelPendingReportDraft,
   confirmPendingReportDraft,
   loadCatalogExerciseNames,
   loadPendingReportDraft,
+  loadReportDraftByVoiceFile,
   loadReportPlan,
   saveReportDraft,
 } from "./workout-report-db.ts";
-import { formatWorkoutReportDraft, parseEditedPlanReport, parseWorkoutReport } from "./workout-report.ts";
+import { formatWorkoutReportDraft, parseEditedPlanReport, parseWorkoutReport, parseWorkoutVoiceReport } from "./workout-report.ts";
 import {
   answerPostWorkoutCheckin,
   cancelPostWorkoutCheckin,
@@ -264,6 +265,61 @@ async function reportReply(update: TelegramUpdate, env: Env, telegramUserId: str
   }
 }
 
+async function voiceReportReply(update: TelegramUpdate, env: Env, telegramUserId: string): Promise<string> {
+  const voice = update.message?.voice;
+  if (!voice) throw new Error("Голосовое сообщение отсутствует");
+  if (!Number.isFinite(voice.duration) || voice.duration < 1 || voice.duration > 120) {
+    return "Голосовой отчёт должен быть не длиннее 2 минут. Для длинного отчёта отправь несколько фактических строк текстом.";
+  }
+  if ((voice.file_size ?? 0) > 4 * 1024 * 1024) return "Голосовой отчёт превышает безопасный лимит 4 МБ.";
+
+  const timeZone = env.APP_TIMEZONE || "Europe/Samara";
+  const user = await ensureUser(env.DB, telegramUserId, timeZone);
+  const existing = await loadReportDraftByVoiceFile(env.DB, user.id, voice.file_unique_id);
+  if (existing) {
+    if (existing.status === "pending") return formatWorkoutReportDraft(existing.report);
+    if (existing.status === "confirmed") return "Этот голосовой отчёт уже подтверждён и сохранён.";
+    return "Этот голосовой файл уже обрабатывался и повторно в Gemini не отправляется. Пришли новый голосовой отчёт или текст.";
+  }
+
+  const today = localDateAt(new Date(), timeZone);
+  const plan = await loadReportPlan(env.DB, user.id, toIsoDate(today))
+    ?? await loadReportPlan(env.DB, user.id, toIsoDate(addCalendarDays(today, -1)));
+  if (!plan) return "Не нашёл отправленный план за сегодня или вчера. Голос не отправлялся в Gemini.";
+  const usageBlock = await aiUsageBlock(env, user.id);
+  if (usageBlock) return usageBlock;
+
+  try {
+    const [audio, catalogExerciseNames] = await Promise.all([
+      downloadTelegramVoice(env.TELEGRAM_BOT_TOKEN, voice.file_id, voice.mime_type),
+      loadCatalogExerciseNames(env.DB),
+    ]);
+    const parsed = await parseWorkoutVoiceReport(env.GEMINI_API_KEY, env.GEMINI_MODEL, {
+      date: plan.plannedFor,
+      plan: plan.workout,
+      catalogExerciseNames,
+      audio,
+    });
+    await saveReportDraft(
+      env.DB,
+      user.id,
+      plan.id,
+      update.update_id,
+      `[голосовой отчёт, ${voice.duration} сек]`,
+      parsed.report,
+      env.GEMINI_MODEL,
+      parsed.inputTokens,
+      parsed.outputTokens,
+      voice.file_unique_id,
+    );
+    return formatWorkoutReportDraft(parsed.report);
+  } catch (error) {
+    await env.DB.prepare("INSERT INTO system_events(event_type, payload_json) VALUES ('voice_workout_report_failed', ?)")
+      .bind(JSON.stringify({ fileUniqueId: voice.file_unique_id, error: error instanceof Error ? error.message : "unknown" })).run();
+    return "Не смог надёжно разобрать голосовой отчёт. Ничего не записано как выполненная тренировка. Само аудио не сохранялось; пришли отчёт текстом или новым голосовым сообщением до 2 минут.";
+  }
+}
+
 async function freeTextReply(update: TelegramUpdate, env: Env, telegramUserId: string, text: string): Promise<string> {
   const user = await ensureUser(env.DB, telegramUserId, env.APP_TIMEZONE || "Europe/Samara");
   const checkinReply = await answerPostWorkoutCheckin(env.DB, user.id, text);
@@ -340,22 +396,23 @@ async function labPhotoReply(update: TelegramUpdate, env: Env, telegramUserId: s
 
 async function handleUpdate(update: TelegramUpdate, env: Env): Promise<Response> {
   const message = update.message;
-  if (!message?.from || (!message.text && !message.caption && !message.photo?.length && !message.document)) return new Response("ok");
+  if (!message?.from || (!message.text && !message.caption && !message.photo?.length && !message.document && !message.voice)) return new Response("ok");
   if (String(message.from.id) !== env.ALLOWED_TELEGRAM_USER_ID) return new Response("forbidden", { status: 403 });
 
   const originalText = (message.text ?? message.caption ?? "").trim();
-  const text = message.photo?.length||message.document ? originalText : commandFromMenuText(originalText);
+  const text = message.photo?.length||message.document||message.voice ? originalText : commandFromMenuText(originalText);
   const offset = requestedDayOffset(text);
   let reply: string;
   let showMenu = false;
-  if(message.document){reply=/^\/fatsecret(?:@\w+)?$/i.test(text)?await nutritionCsvReply(update,env,String(message.from.id)):"CSV обрабатывается только с подписью /fatsecret.";
+  if(message.voice){reply=await voiceReportReply(update,env,String(message.from.id));
+  } else if(message.document){reply=/^\/fatsecret(?:@\w+)?$/i.test(text)?await nutritionCsvReply(update,env,String(message.from.id)):"CSV обрабатывается только с подписью /fatsecret.";
   } else if (message.photo?.length) {
     if(/^\/nutrition(?:@\w+)?$/i.test(text))reply=await nutritionPhotoReply(update,env,String(message.from.id));
     else if(/^\/labphoto(?:@\w+)?$/i.test(text))reply=await labPhotoReply(update,env,String(message.from.id));
     else reply="Фото обрабатывается только с явной подписью: /nutrition для КБЖУ или /labphoto для лабораторного бланка. Без подписи фото не отправляется в Gemini.";
   } else if (text === "/start" || text === "/help" || text === "/menu") {
     showMenu = true;
-    reply = "Команды: /today — тренировка на сегодня, /tomorrow — на завтра, /schedule — разовые переносы и отмены, /reminders — напоминания о весе и замерах, /review — итоги за 28 дней, /usage — расход и дневной предел Gemini, /goal — текущая цель, /confirm — подтвердить отчёт или КБЖУ, /fatsecret — подпись к пользовательскому CSV, /nutrition — подпись к аварийному скриншоту FatSecret, /weight 87.5 — аварийная запись веса, /measure — месячные замеры, /progress — тело и питание, /strength — силовая динамика, /injuries — травмы, /reintroductions — возврат упражнений, /exercises — каталог, /cancel — отмена текущего диалога.";
+    reply = "Команды: /today — тренировка на сегодня, /tomorrow — на завтра, /schedule — разовые переносы и отмены, /reminders — напоминания о весе и замерах, /review — итоги за 28 дней, /usage — расход и дневной предел Gemini, /goal — текущая цель, /confirm — подтвердить отчёт или КБЖУ, /fatsecret — подпись к пользовательскому CSV, /nutrition — подпись к аварийному скриншоту FatSecret, /weight 87.5 — аварийная запись веса, /measure — месячные замеры, /progress — тело и питание, /strength — силовая динамика, /injuries — травмы, /reintroductions — возврат упражнений, /exercises — каталог, /cancel — отмена текущего диалога. Голосовое сообщение до 2 минут разбирается как фактический отчёт к плану за сегодня или вчера.";
   } else if (text === "/confirm") {
     const user = await ensureUser(env.DB, String(message.from.id), env.APP_TIMEZONE || "Europe/Samara");
     const workoutDraft = await loadPendingReportDraft(env.DB, user.id);

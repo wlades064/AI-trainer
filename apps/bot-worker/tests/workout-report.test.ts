@@ -2,10 +2,12 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   buildWorkoutReportPrompt,
+  buildWorkoutVoiceReportPrompt,
   formatWorkoutReportDraft,
   looksLikeWorkoutReport,
   parseEditedPlanReport,
   parseWorkoutReport,
+  parseWorkoutVoiceReport,
   reportConfirmationBlockers,
   validateWorkoutReport,
 } from "../src/workout-report.ts";
@@ -76,6 +78,37 @@ test("report parser uses a structured stateless request", async () => {
   assert.equal("store" in (requestBody ?? {}), false);
   assert.equal(result.report.energy, 4);
   assert.deepEqual([result.inputTokens, result.outputTokens], [100, 50]);
+});
+
+test("voice report uses one inline structured Gemini request", async () => {
+  let requestBody: any;
+  const fakeFetch: typeof fetch = async (_url, init) => {
+    requestBody = JSON.parse(String(init?.body));
+    return Response.json({
+      usageMetadata: { promptTokenCount: 2100, candidatesTokenCount: 50 },
+      candidates: [{ content: { parts: [{ text: JSON.stringify(validReport) }] } }],
+    });
+  };
+  const result = await parseWorkoutVoiceReport("secret", "gemini-test", {
+    date: "2026-08-26",
+    plan,
+    catalogExerciseNames: ["Подтягивания", "Пуловер"],
+    audio: { data: "BASE64_AUDIO", mimeType: "audio/ogg" },
+  }, fakeFetch);
+  assert.deepEqual(requestBody.contents[0].parts[0], {
+    inline_data: { mime_type: "audio/ogg", data: "BASE64_AUDIO" },
+  });
+  assert.match(requestBody.contents[0].parts[1].text, /Не создавай отдельную транскрипцию/);
+  assert.equal(result.report.energy, 4);
+  assert.deepEqual([result.inputTokens, result.outputTokens], [2100, 50]);
+});
+
+test("voice prompt demands explicit facts and missing-information questions", () => {
+  const prompt = buildWorkoutVoiceReportPrompt({
+    date: "2026-08-26", plan, catalogExerciseNames: ["Подтягивания", "Пуловер"],
+  });
+  assert.match(prompt, /только когда они произнесены явно/);
+  assert.match(prompt, /не угадывай/);
 });
 
 test("natural Russian completion text is recognized as a workout report", () => {

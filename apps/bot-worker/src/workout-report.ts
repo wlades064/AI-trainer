@@ -279,6 +279,24 @@ export function buildWorkoutReportPrompt(input: {
   ].join("\n");
 }
 
+export function buildWorkoutVoiceReportPrompt(input: {
+  date: string;
+  plan: GeneratedWorkout;
+  catalogExerciseNames: string[];
+}): string {
+  const compactPlan = input.plan.exercises.map(({ name, sets, reps, weightGuidance }) => ({ name, sets, reps, weightGuidance }));
+  return [
+    "Разбери русское голосовое сообщение как фактический отчёт о тренировке и сразу верни строгую структуру. Не создавай отдельную транскрипцию и ничего не придумывай.",
+    `Дата: ${input.date}. План: ${JSON.stringify(compactPlan)}.`,
+    `Допустимые названия замен: ${JSON.stringify(input.catalogExerciseNames)}.`,
+    "Верни каждое упражнение плана ровно один раз и сохрани его точное название.",
+    "Распознавай числа, веса, повторения, подходы, замены, пропуски и кардио только когда они произнесены явно.",
+    "Фраза «остальное по плану» означает performedAsPlanned=true, но не разрешает придумывать вес из целевого диапазона.",
+    "Вес гантели записывай как per_dumbbell, вес на одну сторону Хаммера как per_side, цифру на блоке как machine_display.",
+    "Если слово или число неразборчиво, не угадывай: добавь конкретный вопрос в missingInformation.",
+  ].join("\n");
+}
+
 function responseText(response: GenerateContentResponse): string {
   const value = response.candidates?.[0]?.content?.parts?.find((part) => typeof part.text === "string")?.text;
   if (!value) throw new Error("Gemini не вернул разобранный отчёт");
@@ -342,6 +360,39 @@ export async function parseWorkoutReport(
     }),
   });
   if (!response.ok) throw new Error(`Gemini report parser error: ${response.status}`);
+  const generated = await response.json<GenerateContentResponse>();
+  const report = validateWorkoutReport(
+    JSON.parse(responseText(generated)),
+    input.date,
+    input.plan.exercises.map(({ name }) => name),
+    new Set(input.catalogExerciseNames),
+  );
+  return {
+    report,
+    inputTokens: generated.usageMetadata?.promptTokenCount ?? 0,
+    outputTokens: generated.usageMetadata?.candidatesTokenCount ?? 0,
+  };
+}
+
+export async function parseWorkoutVoiceReport(
+  apiKey: string,
+  model: string,
+  input: Parameters<typeof buildWorkoutVoiceReportPrompt>[0] & { audio: { data: string; mimeType: string } },
+  fetchImpl: typeof fetch = fetch,
+): Promise<{ report: WorkoutReportDraft; inputTokens: number; outputTokens: number }> {
+  const response = await fetchImpl(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`, {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-goog-api-key": apiKey },
+    signal: AbortSignal.timeout(30_000),
+    body: JSON.stringify({
+      contents: [{ parts: [
+        { inline_data: { mime_type: input.audio.mimeType, data: input.audio.data } },
+        { text: buildWorkoutVoiceReportPrompt(input) },
+      ] }],
+      generationConfig: { responseMimeType: "application/json", responseJsonSchema: REPORT_SCHEMA },
+    }),
+  });
+  if (!response.ok) throw new Error(`Gemini voice report parser error: ${response.status}`);
   const generated = await response.json<GenerateContentResponse>();
   const report = validateWorkoutReport(
     JSON.parse(responseText(generated)),

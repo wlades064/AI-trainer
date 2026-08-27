@@ -19,6 +19,7 @@ export interface AiUsageLimits {
 const PURPOSE_LABELS: Readonly<Record<string, string>> = {
   workout_generation: "тренировки",
   workout_report_parsing: "разбор отчётов",
+  voice_workout_report_parsing: "голосовые отчёты",
   nutrition_screenshot_parsing: "скриншоты КБЖУ",
   lab_screenshot_parsing: "фото анализов",
 };

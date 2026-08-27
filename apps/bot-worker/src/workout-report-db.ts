@@ -27,6 +27,14 @@ export interface PendingReportDraft {
   report: WorkoutReportDraft;
 }
 
+export async function loadReportDraftByVoiceFile(db: D1Database, userId: number, fileUniqueId: string): Promise<(PendingReportDraft & { status: string }) | null> {
+  const row = await db.prepare(
+    `SELECT id, plan_id, parsed_json, status FROM workout_report_drafts
+     WHERE user_id = ? AND source_file_unique_id = ? LIMIT 1`,
+  ).bind(userId, fileUniqueId).first<{ id: number; plan_id: number; parsed_json: string; status: string }>();
+  return row ? { id: row.id, planId: row.plan_id, report: JSON.parse(row.parsed_json) as WorkoutReportDraft, status: row.status } : null;
+}
+
 export async function loadReportPlan(db: D1Database, userId: number, localDate: string): Promise<ReportPlan | null> {
   const row = await db.prepare(
     `SELECT id, planned_for, focus, emphasis, load_mode, generated_json
@@ -60,20 +68,21 @@ export async function saveReportDraft(
   model: string,
   inputTokens: number,
   outputTokens: number,
+  sourceFileUniqueId?: string,
 ): Promise<number> {
   await db.prepare(
     "UPDATE workout_report_drafts SET status = 'expired' WHERE user_id = ? AND status = 'pending'",
   ).bind(userId).run();
   const row = await db.prepare(
-    `INSERT INTO workout_report_drafts(user_id, plan_id, source_update_id, raw_text, parsed_json, status, expires_at)
-     VALUES (?, ?, ?, ?, ?, 'pending', datetime('now', '+2 days')) RETURNING id`,
-  ).bind(userId, planId, sourceUpdateId, rawText, JSON.stringify(report)).first<{ id: number }>();
+    `INSERT INTO workout_report_drafts(user_id, plan_id, source_update_id, raw_text, parsed_json, status, expires_at, source_file_unique_id)
+     VALUES (?, ?, ?, ?, ?, 'pending', datetime('now', '+2 days'), ?) RETURNING id`,
+  ).bind(userId, planId, sourceUpdateId, rawText, JSON.stringify(report), sourceFileUniqueId ?? null).first<{ id: number }>();
   if (!row) throw new Error("Не удалось сохранить черновик тренировки");
   if (inputTokens > 0 || outputTokens > 0) {
     await db.prepare(
       `INSERT INTO ai_usage(user_id, purpose, model_name, input_tokens, output_tokens, estimated_cost_usd)
-       VALUES (?, 'workout_report_parsing', ?, ?, ?, 0)`,
-    ).bind(userId, model, inputTokens, outputTokens).run();
+       VALUES (?, ?, ?, ?, ?, 0)`,
+    ).bind(userId, sourceFileUniqueId ? "voice_workout_report_parsing" : "workout_report_parsing", model, inputTokens, outputTokens).run();
   }
   return row.id;
 }
