@@ -55,8 +55,8 @@ interface MeasurementRow { measured_at: string; kind: string; value: number; uni
 export async function progressSummary(db: D1Database, userId: number, localDate: string): Promise<string> {
   const measurements = await db.prepare(`SELECT measured_at, kind, value, unit FROM body_measurements
     WHERE user_id=? ORDER BY measured_at DESC LIMIT 80`).bind(userId).all<MeasurementRow>();
-  const nutrition = await db.prepare(`SELECT local_date, calories_kcal, protein_g, fat_g, carbohydrate_g FROM nutrition_days
-    WHERE user_id=? AND local_date>=date(?,'-13 days') AND local_date<=? ORDER BY local_date DESC`).bind(userId,localDate,localDate).all<NutritionTrendDay>();
+  const nutrition = await db.prepare(`SELECT local_date, calories_kcal, protein_g, fat_g, carbohydrate_g FROM nutrition_days n
+    WHERE user_id=? AND local_date>=date(?,'-13 days') AND local_date<=? AND id=(SELECT id FROM nutrition_days p WHERE p.user_id=n.user_id AND p.local_date=n.local_date ORDER BY CASE p.source WHEN 'fatsecret_user_export' THEN 1 WHEN 'fatsecret_screenshot' THEN 2 ELSE 3 END,p.imported_at DESC,p.id DESC LIMIT 1) ORDER BY local_date DESC`).bind(userId,localDate,localDate).all<NutritionTrendDay>();
   const workouts = await db.prepare(`SELECT focus,COUNT(*) AS count FROM workout_sessions
     WHERE user_id=? AND confirmed_at IS NOT NULL AND local_date>=date(?,'-27 days') AND local_date<=? GROUP BY focus`).bind(userId,localDate,localDate).all<{focus:string|null;count:number}>();
   const byKind = new Map<string, MeasurementRow[]>();

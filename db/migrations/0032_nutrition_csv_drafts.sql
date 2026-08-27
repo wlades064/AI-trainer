@@ -1,0 +1,14 @@
+CREATE TABLE nutrition_csv_drafts (
+  id INTEGER PRIMARY KEY,
+  user_id INTEGER NOT NULL REFERENCES users(id),
+  source_update_id INTEGER NOT NULL,
+  file_unique_id TEXT NOT NULL,
+  file_name TEXT,
+  parsed_json TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','confirmed','cancelled','expired')),
+  expires_at TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  confirmed_at TEXT,
+  UNIQUE(user_id,file_unique_id)
+);
+CREATE INDEX idx_nutrition_csv_drafts_pending ON nutrition_csv_drafts(user_id,status,created_at);

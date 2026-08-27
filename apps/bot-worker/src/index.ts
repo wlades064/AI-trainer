@@ -16,7 +16,7 @@ import {
 import { filterSafeExercises } from "./domain/safety.ts";
 import { programmingRules } from "./domain/programming.ts";
 import { generateWorkout, type GeneratedWorkout } from "./gemini.ts";
-import { downloadTelegramPhoto, selectEfficientPhoto, sendTelegramMessage, type TelegramUpdate } from "./telegram.ts";
+import { downloadTelegramPhoto, downloadTelegramTextDocument, selectEfficientPhoto, sendTelegramMessage, type TelegramUpdate } from "./telegram.ts";
 import {
   cancelPendingReportDraft,
   confirmPendingReportDraft,
@@ -64,6 +64,8 @@ import { answerExerciseAddConversation, cancelExerciseAddConversation } from "./
 import { answerScheduleConversation, cancelScheduleConversation, loadScheduleOverride, startScheduleConversation } from "./schedule-management-db.ts";
 import { answerReminderConversation, cancelReminderConversation, runDueReminders, startReminderConversation } from "./reminders-db.ts";
 import { progressReview } from "./progress-review-db.ts";
+import { formatNutritionCsvDraft, parseNutritionCsv } from "./nutrition-csv.ts";
+import { cancelNutritionCsv, confirmNutritionCsv, findNutritionCsv, pendingNutritionCsv, saveNutritionCsvDraft } from "./nutrition-csv-db.ts";
 
 interface Env {
   DB: D1Database;
@@ -289,33 +291,38 @@ async function nutritionPhotoReply(update: TelegramUpdate, env: Env, telegramUse
   }
 }
 
+async function nutritionCsvReply(update:TelegramUpdate,env:Env,telegramUserId:string):Promise<string>{const document=update.message?.document;if(!document)throw new Error("Документ отсутствует");const name=document.file_name??"FatSecret.csv";if(!name.toLocaleLowerCase("ru-RU").endsWith(".csv"))return"Нужен файл FatSecret в формате CSV.";if((document.file_size??0)>2*1024*1024)return"CSV превышает безопасный лимит 2 МБ.";const user=await ensureUser(env.DB,telegramUserId,env.APP_TIMEZONE||"Europe/Samara");const existing=await findNutritionCsv(env.DB,user.id,document.file_unique_id);if(existing?.status==="confirmed")return"Этот CSV FatSecret уже импортирован.";if(existing?.status==="pending")return formatNutritionCsvDraft(JSON.parse(existing.parsed_json));try{const text=await downloadTelegramTextDocument(env.TELEGRAM_BOT_TOKEN,document.file_id);const days=parseNutritionCsv(text);await saveNutritionCsvDraft(env.DB,user.id,update.update_id,document.file_unique_id,name,days);return formatNutritionCsvDraft(days)}catch(error){await env.DB.prepare("INSERT INTO system_events(event_type,payload_json)VALUES('fatsecret_csv_failed',?)").bind(JSON.stringify({error:error instanceof Error?error.message:"unknown"})).run();return`Не смог безопасно разобрать CSV. Ничего не сохранено. ${error instanceof Error?error.message:"Неизвестная ошибка"}`}}
+
 async function labPhotoReply(update:TelegramUpdate,env:Env,telegramUserId:string):Promise<string>{const message=update.message;if(!message?.photo?.length)throw new Error("Фото отсутствует");const user=await ensureUser(env.DB,telegramUserId,env.APP_TIMEZONE||"Europe/Samara");const selected=selectEfficientPhoto(message.photo);const existing=await findLabImage(env.DB,user.id,selected.file_unique_id);if(existing)return existing.status==="confirmed"?"Этот лабораторный бланк уже сохранён.":formatLabImageDraft(JSON.parse(existing.parsed_json));try{const image=await downloadTelegramPhoto(env.TELEGRAM_BOT_TOKEN,selected.file_id);const today=toIsoDate(localDateAt(new Date(),env.APP_TIMEZONE||"Europe/Samara"));const parsed=await parseLabScreenshot(env.GEMINI_API_KEY,env.GEMINI_MODEL,image,today);await saveLabImageDraft(env.DB,user.id,update.update_id,selected.file_unique_id,parsed.draft,env.GEMINI_MODEL,parsed.inputTokens,parsed.outputTokens);return formatLabImageDraft(parsed.draft)}catch(error){await env.DB.prepare("INSERT INTO system_events(event_type,payload_json)VALUES('lab_screenshot_failed',?)").bind(JSON.stringify({error:error instanceof Error?error.message:"unknown"})).run();return"Не смог надёжно прочитать бланк. Ничего не сохранено. Пришли одно чёткое фото с подписью /labphoto."}}
 
 async function handleUpdate(update: TelegramUpdate, env: Env): Promise<Response> {
   const message = update.message;
-  if (!message?.from || (!message.text && !message.caption && !message.photo?.length)) return new Response("ok");
+  if (!message?.from || (!message.text && !message.caption && !message.photo?.length && !message.document)) return new Response("ok");
   if (String(message.from.id) !== env.ALLOWED_TELEGRAM_USER_ID) return new Response("forbidden", { status: 403 });
 
   const originalText = (message.text ?? message.caption ?? "").trim();
-  const text = message.photo?.length ? originalText : commandFromMenuText(originalText);
+  const text = message.photo?.length||message.document ? originalText : commandFromMenuText(originalText);
   const offset = requestedDayOffset(text);
   let reply: string;
   let showMenu = false;
-  if (message.photo?.length) {
+  if(message.document){reply=/^\/fatsecret(?:@\w+)?$/i.test(text)?await nutritionCsvReply(update,env,String(message.from.id)):"CSV обрабатывается только с подписью /fatsecret.";
+  } else if (message.photo?.length) {
     if(/^\/nutrition(?:@\w+)?$/i.test(text))reply=await nutritionPhotoReply(update,env,String(message.from.id));
     else if(/^\/labphoto(?:@\w+)?$/i.test(text))reply=await labPhotoReply(update,env,String(message.from.id));
     else reply="Фото обрабатывается только с явной подписью: /nutrition для КБЖУ или /labphoto для лабораторного бланка. Без подписи фото не отправляется в Gemini.";
   } else if (text === "/start" || text === "/help" || text === "/menu") {
     showMenu = true;
-    reply = "Команды: /today — тренировка на сегодня, /tomorrow — на завтра, /schedule — разовые переносы и отмены, /reminders — напоминания о весе и замерах, /review — итоги за 28 дней, /goal — текущая цель, /confirm — подтвердить отчёт или КБЖУ, /nutrition — подпись к скриншоту FatSecret, /weight 87.5 — аварийная запись веса, /measure — месячные замеры, /progress — тело и питание, /strength — силовая динамика, /injuries — травмы, /reintroductions — возврат упражнений, /exercises — каталог, /cancel — отмена текущего диалога.";
+    reply = "Команды: /today — тренировка на сегодня, /tomorrow — на завтра, /schedule — разовые переносы и отмены, /reminders — напоминания о весе и замерах, /review — итоги за 28 дней, /goal — текущая цель, /confirm — подтвердить отчёт или КБЖУ, /fatsecret — подпись к пользовательскому CSV, /nutrition — подпись к аварийному скриншоту FatSecret, /weight 87.5 — аварийная запись веса, /measure — месячные замеры, /progress — тело и питание, /strength — силовая динамика, /injuries — травмы, /reintroductions — возврат упражнений, /exercises — каталог, /cancel — отмена текущего диалога.";
   } else if (text === "/confirm") {
     const user = await ensureUser(env.DB, String(message.from.id), env.APP_TIMEZONE || "Europe/Samara");
     const workoutDraft = await loadPendingReportDraft(env.DB, user.id);
     const nutritionDraft = workoutDraft ? null : await loadPendingNutritionDraft(env.DB, user.id);
-    const labDraft = workoutDraft||nutritionDraft?null:await pendingLabImageDraft(env.DB,user.id);
+    const csvDraft = workoutDraft||nutritionDraft?null:await pendingNutritionCsv(env.DB,user.id);
+    const labDraft = workoutDraft||nutritionDraft||csvDraft?null:await pendingLabImageDraft(env.DB,user.id);
     if (nutritionDraft) {
       const confirmed = await confirmNutritionDraft(env.DB, user.id);
       reply = `${confirmed.date}: общий КБЖУ подтверждён и сохранён в истории питания.`;
+    } else if(csvDraft){const confirmed=await confirmNutritionCsv(env.DB,user.id);reply=`Импорт FatSecret подтверждён: сохранено ${confirmed.length} дней, ${confirmed[0].date} — ${confirmed.at(-1)!.date}. Продукты в БД не переносились.`;
     } else if(labDraft){const confirmed=await confirmLabImageDraft(env.DB,user.id);reply=`${confirmed.date}: подтверждено и сохранено показателей: ${confirmed.items.length}. Медицинская интерпретация не выполнялась.`;
     } else try {
       const confirmed = await confirmPendingReportDraft(env.DB, user.id);
@@ -342,6 +349,8 @@ async function handleUpdate(update: TelegramUpdate, env: Env): Promise<Response>
       reply = "Предтренировочный чекин отменён. Тренировка не составлялась.";
     } else if (await cancelNutritionDraft(env.DB, user.id)) {
       reply = "Черновик КБЖУ отменён. В историю питания ничего не записано.";
+    } else if(await cancelNutritionCsv(env.DB,user.id)){
+      reply="CSV-черновик FatSecret отменён. В историю питания ничего не записано.";
     } else if(await cancelLabImageDraft(env.DB,user.id)){
       reply="Черновик анализов отменён. Показатели не сохранены.";
     } else if (await cancelMeasurementConversation(env.DB, user.id)) {
@@ -417,6 +426,8 @@ async function handleUpdate(update: TelegramUpdate, env: Env): Promise<Response>
     }
   } else if (text === "/nutrition") {
     reply = "Пришли один скриншот дневного итога FatSecret и добавь к фотографии подпись /nutrition. Без подписи изображение не отправится в Gemini.";
+  } else if(text==="/fatsecret"){
+    reply="Экспортируй пользовательский отчёт FatSecret в CSV и отправь его документом с подписью /fatsecret. Сначала бот покажет черновик; запись будет только после /confirm.";
   } else if (text === "/supplements") {
     const user=await ensureUser(env.DB,String(message.from.id),env.APP_TIMEZONE||"Europe/Samara");const rows=await listSupplements(env.DB,user.id);
     reply=`${rows.length?["Активные добавки:",...rows.map((r)=>`${r.id}. ${r.name} — ${r.dose_value} ${r.dose_unit}, ${r.schedule_text}`)].join("\n"):"Активные добавки не записаны."}\n\n${SUPPLEMENT_HELP}`;
