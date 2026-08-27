@@ -66,6 +66,8 @@ import { answerReminderConversation, cancelReminderConversation, runDueReminders
 import { progressReview } from "./progress-review-db.ts";
 import { formatNutritionCsvDraft, parseNutritionCsv } from "./nutrition-csv.ts";
 import { cancelNutritionCsv, confirmNutritionCsv, findNutritionCsv, pendingNutritionCsv, saveNutritionCsvDraft } from "./nutrition-csv-db.ts";
+import { aiUsageLimitMessage, formatAiUsageOverview, parseAiUsageLimits } from "./ai-usage.ts";
+import { loadAiUsageOverview } from "./ai-usage-db.ts";
 
 interface Env {
   DB: D1Database;
@@ -75,6 +77,8 @@ interface Env {
   ALLOWED_TELEGRAM_USER_ID: string;
   GEMINI_API_KEY: string;
   GEMINI_MODEL: string;
+  AI_DAILY_REQUEST_LIMIT?: string;
+  AI_DAILY_TOKEN_LIMIT?: string;
 }
 
 const GUIDANCE = {
@@ -82,6 +86,18 @@ const GUIDANCE = {
   back: ["4 упражнения на спину", "дополнительно задние дельты и бицепс", "не дублировать одинаковые тяги без причины"],
   legs: ["4 упражнения на ноги", "дополнительно средние дельты", "не использовать упражнения со статусом постепенного возврата без отдельного разрешения", "для коленей только консервативная нагрузка"],
 } as const;
+
+async function currentAiUsage(env: Env, userId: number) {
+  const today = toIsoDate(localDateAt(new Date(), env.APP_TIMEZONE || "Europe/Samara"));
+  const overview = await loadAiUsageOverview(env.DB, userId, today);
+  const limits = parseAiUsageLimits(env.AI_DAILY_REQUEST_LIMIT, env.AI_DAILY_TOKEN_LIMIT);
+  return { overview, limits };
+}
+
+async function aiUsageBlock(env: Env, userId: number): Promise<string | null> {
+  const { overview, limits } = await currentAiUsage(env, userId);
+  return aiUsageLimitMessage(overview.today, limits);
+}
 
 function formatWorkout(date: string, workout: GeneratedWorkout, reused = false): string {
   const sections = [
@@ -152,6 +168,8 @@ async function workoutReply(offset: 0 | 1, env: Env, telegramUserId: string): Pr
   const preferred = safe.allowed.filter((exercise) => (exercise.priority ?? 0) > 0).map((exercise) => exercise.name);
   const deprioritized = safe.allowed.filter((exercise) => (exercise.priority ?? 0) < 0).map((exercise) => exercise.name);
   if (testing.length > 1) return `${training.date}: одновременно отмечено несколько тестируемых упражнений. Оставь одно через «🔄 Возврат», чтобы тест был контролируемым.`;
+  const usageBlock = await aiUsageBlock(env, user.id);
+  if (usageBlock) return usageBlock;
   try {
     const generated = await generateWorkout(env.GEMINI_API_KEY, env.GEMINI_MODEL, {
       date: training.date,
@@ -208,18 +226,21 @@ async function reportReply(update: TelegramUpdate, env: Env, telegramUserId: str
   if (!plan) return "Не нашёл отправленный план за сегодня или вчера. Сначала запроси тренировку, затем пришли фактический отчёт.";
   try {
     const deterministic = parseEditedPlanReport({ date: plan.plannedFor, plan: plan.workout, reportText: rawText });
-    const parsed = deterministic
-      ? { report: deterministic, inputTokens: 0, outputTokens: 0, model: "deterministic-edited-plan-v1" }
-      : await (async () => {
-        const catalogExerciseNames = await loadCatalogExerciseNames(env.DB);
-        const result = await parseWorkoutReport(env.GEMINI_API_KEY, env.GEMINI_MODEL, {
-          date: plan.plannedFor,
-          plan: plan.workout,
-          reportText: rawText,
-          catalogExerciseNames,
-        });
-        return { ...result, model: env.GEMINI_MODEL };
-      })();
+    let parsed;
+    if (deterministic) {
+      parsed = { report: deterministic, inputTokens: 0, outputTokens: 0, model: "deterministic-edited-plan-v1" };
+    } else {
+      const usageBlock = await aiUsageBlock(env, user.id);
+      if (usageBlock) return usageBlock;
+      const catalogExerciseNames = await loadCatalogExerciseNames(env.DB);
+      const result = await parseWorkoutReport(env.GEMINI_API_KEY, env.GEMINI_MODEL, {
+        date: plan.plannedFor,
+        plan: plan.workout,
+        reportText: rawText,
+        catalogExerciseNames,
+      });
+      parsed = { ...result, model: env.GEMINI_MODEL };
+    }
     await saveReportDraft(
       env.DB,
       user.id,
@@ -278,6 +299,8 @@ async function nutritionPhotoReply(update: TelegramUpdate, env: Env, telegramUse
     const draft = JSON.parse(existing.parsed_json);
     return existing.status === "confirmed" ? "Этот скриншот КБЖУ уже сохранён." : formatNutritionDraft(draft);
   }
+  const usageBlock = await aiUsageBlock(env, user.id);
+  if (usageBlock) return usageBlock;
   try {
     const image = await downloadTelegramPhoto(env.TELEGRAM_BOT_TOKEN, selected.file_id);
     const today = toIsoDate(localDateAt(new Date(), env.APP_TIMEZONE || "Europe/Samara"));
@@ -293,7 +316,27 @@ async function nutritionPhotoReply(update: TelegramUpdate, env: Env, telegramUse
 
 async function nutritionCsvReply(update:TelegramUpdate,env:Env,telegramUserId:string):Promise<string>{const document=update.message?.document;if(!document)throw new Error("Документ отсутствует");const name=document.file_name??"FatSecret.csv";if(!name.toLocaleLowerCase("ru-RU").endsWith(".csv"))return"Нужен файл FatSecret в формате CSV.";if((document.file_size??0)>2*1024*1024)return"CSV превышает безопасный лимит 2 МБ.";const user=await ensureUser(env.DB,telegramUserId,env.APP_TIMEZONE||"Europe/Samara");const existing=await findNutritionCsv(env.DB,user.id,document.file_unique_id);if(existing?.status==="confirmed")return"Этот CSV FatSecret уже импортирован.";if(existing?.status==="pending")return formatNutritionCsvDraft(JSON.parse(existing.parsed_json));try{const text=await downloadTelegramTextDocument(env.TELEGRAM_BOT_TOKEN,document.file_id);const days=parseNutritionCsv(text);await saveNutritionCsvDraft(env.DB,user.id,update.update_id,document.file_unique_id,name,days);return formatNutritionCsvDraft(days)}catch(error){await env.DB.prepare("INSERT INTO system_events(event_type,payload_json)VALUES('fatsecret_csv_failed',?)").bind(JSON.stringify({error:error instanceof Error?error.message:"unknown"})).run();return`Не смог безопасно разобрать CSV. Ничего не сохранено. ${error instanceof Error?error.message:"Неизвестная ошибка"}`}}
 
-async function labPhotoReply(update:TelegramUpdate,env:Env,telegramUserId:string):Promise<string>{const message=update.message;if(!message?.photo?.length)throw new Error("Фото отсутствует");const user=await ensureUser(env.DB,telegramUserId,env.APP_TIMEZONE||"Europe/Samara");const selected=selectEfficientPhoto(message.photo);const existing=await findLabImage(env.DB,user.id,selected.file_unique_id);if(existing)return existing.status==="confirmed"?"Этот лабораторный бланк уже сохранён.":formatLabImageDraft(JSON.parse(existing.parsed_json));try{const image=await downloadTelegramPhoto(env.TELEGRAM_BOT_TOKEN,selected.file_id);const today=toIsoDate(localDateAt(new Date(),env.APP_TIMEZONE||"Europe/Samara"));const parsed=await parseLabScreenshot(env.GEMINI_API_KEY,env.GEMINI_MODEL,image,today);await saveLabImageDraft(env.DB,user.id,update.update_id,selected.file_unique_id,parsed.draft,env.GEMINI_MODEL,parsed.inputTokens,parsed.outputTokens);return formatLabImageDraft(parsed.draft)}catch(error){await env.DB.prepare("INSERT INTO system_events(event_type,payload_json)VALUES('lab_screenshot_failed',?)").bind(JSON.stringify({error:error instanceof Error?error.message:"unknown"})).run();return"Не смог надёжно прочитать бланк. Ничего не сохранено. Пришли одно чёткое фото с подписью /labphoto."}}
+async function labPhotoReply(update: TelegramUpdate, env: Env, telegramUserId: string): Promise<string> {
+  const message = update.message;
+  if (!message?.photo?.length) throw new Error("Фото отсутствует");
+  const user = await ensureUser(env.DB, telegramUserId, env.APP_TIMEZONE || "Europe/Samara");
+  const selected = selectEfficientPhoto(message.photo);
+  const existing = await findLabImage(env.DB, user.id, selected.file_unique_id);
+  if (existing) return existing.status === "confirmed" ? "Этот лабораторный бланк уже сохранён." : formatLabImageDraft(JSON.parse(existing.parsed_json));
+  const usageBlock = await aiUsageBlock(env, user.id);
+  if (usageBlock) return usageBlock;
+  try {
+    const image = await downloadTelegramPhoto(env.TELEGRAM_BOT_TOKEN, selected.file_id);
+    const today = toIsoDate(localDateAt(new Date(), env.APP_TIMEZONE || "Europe/Samara"));
+    const parsed = await parseLabScreenshot(env.GEMINI_API_KEY, env.GEMINI_MODEL, image, today);
+    await saveLabImageDraft(env.DB, user.id, update.update_id, selected.file_unique_id, parsed.draft, env.GEMINI_MODEL, parsed.inputTokens, parsed.outputTokens);
+    return formatLabImageDraft(parsed.draft);
+  } catch (error) {
+    await env.DB.prepare("INSERT INTO system_events(event_type,payload_json)VALUES('lab_screenshot_failed',?)")
+      .bind(JSON.stringify({ error: error instanceof Error ? error.message : "unknown" })).run();
+    return "Не смог надёжно прочитать бланк. Ничего не сохранено. Пришли одно чёткое фото с подписью /labphoto.";
+  }
+}
 
 async function handleUpdate(update: TelegramUpdate, env: Env): Promise<Response> {
   const message = update.message;
@@ -312,7 +355,7 @@ async function handleUpdate(update: TelegramUpdate, env: Env): Promise<Response>
     else reply="Фото обрабатывается только с явной подписью: /nutrition для КБЖУ или /labphoto для лабораторного бланка. Без подписи фото не отправляется в Gemini.";
   } else if (text === "/start" || text === "/help" || text === "/menu") {
     showMenu = true;
-    reply = "Команды: /today — тренировка на сегодня, /tomorrow — на завтра, /schedule — разовые переносы и отмены, /reminders — напоминания о весе и замерах, /review — итоги за 28 дней, /goal — текущая цель, /confirm — подтвердить отчёт или КБЖУ, /fatsecret — подпись к пользовательскому CSV, /nutrition — подпись к аварийному скриншоту FatSecret, /weight 87.5 — аварийная запись веса, /measure — месячные замеры, /progress — тело и питание, /strength — силовая динамика, /injuries — травмы, /reintroductions — возврат упражнений, /exercises — каталог, /cancel — отмена текущего диалога.";
+    reply = "Команды: /today — тренировка на сегодня, /tomorrow — на завтра, /schedule — разовые переносы и отмены, /reminders — напоминания о весе и замерах, /review — итоги за 28 дней, /usage — расход и дневной предел Gemini, /goal — текущая цель, /confirm — подтвердить отчёт или КБЖУ, /fatsecret — подпись к пользовательскому CSV, /nutrition — подпись к аварийному скриншоту FatSecret, /weight 87.5 — аварийная запись веса, /measure — месячные замеры, /progress — тело и питание, /strength — силовая динамика, /injuries — травмы, /reintroductions — возврат упражнений, /exercises — каталог, /cancel — отмена текущего диалога.";
   } else if (text === "/confirm") {
     const user = await ensureUser(env.DB, String(message.from.id), env.APP_TIMEZONE || "Europe/Samara");
     const workoutDraft = await loadPendingReportDraft(env.DB, user.id);
@@ -387,6 +430,8 @@ async function handleUpdate(update: TelegramUpdate, env: Env): Promise<Response>
     reply = await progressSummary(env.DB, user.id, today);
   } else if(text==="/review"){
     const user=await ensureUser(env.DB,String(message.from.id),env.APP_TIMEZONE||"Europe/Samara");reply=await progressReview(env.DB,user.id,localDateAt(new Date(),env.APP_TIMEZONE||"Europe/Samara"));
+  } else if(text==="/usage"){
+    const user=await ensureUser(env.DB,String(message.from.id),env.APP_TIMEZONE||"Europe/Samara");const usage=await currentAiUsage(env,user.id);reply=formatAiUsageOverview(usage.overview,usage.limits);
   } else if(text==="/strength"){
     const user=await ensureUser(env.DB,String(message.from.id),env.APP_TIMEZONE||"Europe/Samara");const today=toIsoDate(localDateAt(new Date(),env.APP_TIMEZONE||"Europe/Samara"));reply=await strengthProgressSummary(env.DB,user.id,today);
   } else if(text==="/recovery"){

@@ -7,7 +7,9 @@
   "preview_urls": false,
   "vars": {
     "APP_TIMEZONE": "Europe/Samara",
-    "GEMINI_MODEL": "gemini-3.6-flash"
+    "GEMINI_MODEL": "gemini-3.6-flash",
+    "AI_DAILY_REQUEST_LIMIT": "20",
+    "AI_DAILY_TOKEN_LIMIT": "100000"
   },
   "secrets": {
     "required": [

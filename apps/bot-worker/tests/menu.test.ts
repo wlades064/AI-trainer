@@ -12,11 +12,12 @@ test("menu buttons map to existing commands", () => {
   assert.equal(commandFromMenuText("🗓 Расписание"), "/schedule");
   assert.equal(commandFromMenuText("⏰ Напоминания"), "/reminders");
   assert.equal(commandFromMenuText("🧭 Итоги"), "/review");
+  assert.equal(commandFromMenuText("🤖 ИИ-лимит"), "/usage");
   assert.equal(commandFromMenuText("обычный отчёт"), "обычный отчёт");
 });
 
 test("main menu stays compact and persistent", () => {
-  assert.equal(MAIN_MENU_MARKUP.keyboard.length, 9);
+  assert.equal(MAIN_MENU_MARKUP.keyboard.length, 10);
   assert.equal(MAIN_MENU_MARKUP.is_persistent, true);
   assert.ok(MAIN_MENU_MARKUP.keyboard.every((row) => row.length >= 1 && row.length <= 2));
 });
