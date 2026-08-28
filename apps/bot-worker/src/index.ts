@@ -253,14 +253,14 @@ async function reportReply(update: TelegramUpdate, env: Env, telegramUserId: str
     ?? await loadReportPlan(env.DB, user.id, toIsoDate(addCalendarDays(today, -1)));
   if (!plan) return "Не нашёл отправленный план за сегодня или вчера. Сначала запроси тренировку, затем пришли фактический отчёт.";
   try {
-    const deterministic = parseEditedPlanReport({ date: plan.plannedFor, plan: plan.workout, reportText: rawText });
+    const catalogExerciseNames = await loadCatalogExerciseNames(env.DB);
+    const deterministic = parseEditedPlanReport({ date: plan.plannedFor, plan: plan.workout, reportText: rawText, catalogExerciseNames });
     let parsed;
     if (deterministic) {
       parsed = { report: deterministic, inputTokens: 0, outputTokens: 0, model: "deterministic-edited-plan-v1" };
     } else {
       const usageBlock = await aiUsageBlock(env, user.id);
       if (usageBlock) return usageBlock;
-      const catalogExerciseNames = await loadCatalogExerciseNames(env.DB);
       const result = await parseWorkoutReport(env.GEMINI_API_KEY, env.GEMINI_MODEL, {
         date: plan.plannedFor,
         plan: plan.workout,

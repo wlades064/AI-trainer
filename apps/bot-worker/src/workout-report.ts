@@ -53,14 +53,20 @@ function loadBasisFor(name: string, block: string, bodyweight: boolean): LoadBas
   if (bodyweight) return "bodyweight";
   if (normalized.includes("на сторону") || normalized.includes("хаммер")) return "per_side";
   if (normalized.includes("гантел")) return "per_dumbbell";
-  if (normalized.includes("кроссовер") || normalized.includes("блок")) return "machine_display";
+  if (normalized.includes("кроссовер") || normalized.includes("блок") || normalized.includes("тренажер")) return "machine_display";
+  if (normalized.includes("румынск") || normalized.includes("штанг")) return "total";
   return "unknown";
+}
+
+function roundWeight(value: number): number {
+  return Math.round(value * 10) / 10;
 }
 
 export function parseEditedPlanReport(input: {
   date: string;
   plan: GeneratedWorkout;
   reportText: string;
+  catalogExerciseNames?: string[];
 }): WorkoutReportDraft | null {
   const text = normalizeEditedPlanText(input.reportText);
   const explicitDate = text.match(/\b(\d{4}-\d{2}-\d{2})\b/)?.[1];
@@ -69,6 +75,9 @@ export function parseEditedPlanReport(input: {
     /(?:^|\n)\s*(\d+)\.\s*([^\n]+)\n([\s\S]*?)(?=(?:\n\s*\d+\.\s)|(?:\n\s*Кардио\b)|$)/gi,
   )];
   if (matches.length !== input.plan.exercises.length) return null;
+  const catalogByComparable = new Map(
+    (input.catalogExerciseNames ?? []).map((name) => [comparableExerciseName(name), name]),
+  );
   const exercises: ReportExercise[] = [];
   for (let index = 0; index < input.plan.exercises.length; index += 1) {
     const planned = input.plan.exercises[index];
@@ -77,26 +86,40 @@ export function parseEditedPlanReport(input: {
     const reportedName = match[2].trim();
     const plannedName = comparableExerciseName(planned.name);
     const reportedComparable = comparableExerciseName(reportedName);
-    if (!reportedComparable.startsWith(plannedName)) return null;
+    const samePlannedMovement = reportedComparable.startsWith(plannedName);
+    const substitutionName = samePlannedMovement ? undefined : catalogByComparable.get(reportedComparable);
+    if (!samePlannedMovement && !substitutionName) return null;
     const block = match[3].trim();
-    const prescription = block.match(/(\d+)\s*подх?\.?\s*[×xх]\s*(\d+)/i);
+    const prescription = block.match(/(\d+)\s*подх?\.?\s*[×xх]\s*(\d+)(?:\s*[-–—]\s*(\d+))?/i);
     if (!prescription) return null;
     const setCount = Number(prescription[1]);
     const reps = Number(prescription[2]);
-    if (!Number.isInteger(setCount) || setCount < 1 || setCount > 12 || !Number.isInteger(reps) || reps < 1 || reps > 100) return null;
-    const weightMatch = block.match(/Вес:\s*(\d+(?:[.,]\d+)?)\s*кг/i);
-    const bodyweight = planned.weightGuidance.toLowerCase().includes("собствен") || plannedName.includes("подтягиван");
+    const maximumReps = prescription[3] ? Number(prescription[3]) : reps;
+    if (!Number.isInteger(setCount) || setCount < 1 || setCount > 12 || !Number.isInteger(reps) || reps < 1 || maximumReps < reps || maximumReps > 100) return null;
+    const weightMatch = block.match(/^Вес:[ \t]*(\d+(?:[.,]\d+)?)([^\n]*)$/im);
+    const actualName = substitutionName ?? reportedName;
+    const actualComparable = comparableExerciseName(actualName);
+    const bodyweight = planned.weightGuidance.toLowerCase().includes("собствен") || actualComparable.includes("подтягиван");
     if (!bodyweight && !weightMatch) return null;
-    const weightKg = weightMatch ? Number(weightMatch[1].replace(",", ".")) : undefined;
-    const loadBasis = loadBasisFor(reportedName, block, bodyweight);
+    const reportedWeight = weightMatch ? Number(weightMatch[1].replace(",", ".")) : undefined;
+    const weightUnit = weightMatch?.[2].match(/(кг|килограмм(?:а|ов)?|фунт(?:а|ов)?|lbs?)/i)?.[1].toLowerCase();
+    const pounds = weightUnit?.startsWith("фунт") || weightUnit === "lb" || weightUnit === "lbs";
+    const weightKg = reportedWeight === undefined ? undefined : roundWeight(pounds ? reportedWeight * 0.45359237 : reportedWeight);
+    const loadBasis = loadBasisFor(actualName, block, bodyweight);
     const nameSuffix = reportedComparable.slice(plannedName.length).trim();
-    const notes = nameSuffix
+    const variationNotes = samePlannedMovement && nameSuffix
       ? nameSuffix.includes("узким параллельным") ? "узким параллельным хватом" : nameSuffix
       : "";
+    const notes = [
+      variationNotes,
+      maximumReps > reps ? `указан диапазон ${reps}–${maximumReps}; для консервативной аналитики сохранён минимум` : "",
+      pounds ? `${reportedWeight} фунтов по шкале тренажёра` : "",
+    ].filter(Boolean).join("; ");
     exercises.push({
       name: planned.name,
-      status: "completed",
+      status: substitutionName ? "substituted" : "completed",
       performedAsPlanned: false,
+      ...(substitutionName ? { substitutionName } : {}),
       sets: Array.from({ length: setCount }, () => ({
         reps,
         ...(weightKg === undefined ? {} : { weightKg }),
@@ -153,7 +176,7 @@ function setText(set: ReportSet): string {
     : set.loadBasis === "per_dumbbell" ? " на гантель"
       : "";
   const kind = set.setType === "working" ? "" : `, ${set.setType}`;
-  return `${weight}${basis} × ${set.reps}${kind}`;
+  return `${weight}${basis} × ${set.reps}${kind}${set.notes ? ` (${set.notes})` : ""}`;
 }
 
 export function formatWorkoutReportDraft(report: WorkoutReportDraft): string {

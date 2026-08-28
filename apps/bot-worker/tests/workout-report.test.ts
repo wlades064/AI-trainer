@@ -177,3 +177,61 @@ test("the owner's edited plan format is parsed without Gemini", () => {
   });
   assert.deepEqual(reportConfirmationBlockers(parsed), []);
 });
+
+test("the owner's leg report accepts catalog substitutions, omitted kg and pounds", () => {
+  const legPlan = {
+    ...plan,
+    exercises: [
+      { name: "Румынская тяга", sets: 3, reps: "8-10", weightGuidance: "удерживать", restSeconds: 120, notes: "" },
+      { name: "Сгибание ног в тренажере сидя", sets: 3, reps: "12-15", weightGuidance: "удерживать", restSeconds: 90, notes: "" },
+      { name: "Отведение бедра в тренажере", sets: 3, reps: "15-20", weightGuidance: "удерживать", restSeconds: 60, notes: "" },
+      { name: "Приведение бедра в тренажере", sets: 3, reps: "15-20", weightGuidance: "удерживать", restSeconds: 60, notes: "" },
+      { name: "Махи гантелями в стороны сидя", sets: 3, reps: "15-20", weightGuidance: "удерживать", restSeconds: 60, notes: "" },
+    ],
+  };
+  const reportText = `2026-08-28 — Силовая тренировка ног с акцентом на заднюю цепь
+
+1. Румынская тяга
+3 подх. × 10; отдых 120 сек
+Вес: 80кг
+
+2. Сгибание ног в тренажере лёжа
+3 подх. × 12; отдых 90 сек
+Вес: 36кг
+
+3. Отведение бедра в тренажере
+3 подх. × 20; отдых 60 сек
+Вес: 52
+
+4. Приведение бедра в тренажере
+3 подх. × 15-20; отдых 60 сек
+Вес: 120 фунтов
+
+5. Махи гантелями в стороны стоя
+3 подх. × 20; отдых 60 сек
+Вес: 10`;
+  const parsed = parseEditedPlanReport({
+    date: "2026-08-28",
+    plan: legPlan,
+    reportText,
+    catalogExerciseNames: [
+      "Сгибание ног в тренажере сидя",
+      "Сгибание ног в тренажере лежа",
+      "Махи гантелями в стороны сидя",
+      "Махи гантелями в стороны стоя",
+    ],
+  });
+  assert.ok(parsed);
+  assert.equal(parsed.exercises[1].status, "substituted");
+  assert.equal(parsed.exercises[1].substitutionName, "Сгибание ног в тренажере лежа");
+  assert.equal(parsed.exercises[2].sets[0].weightKg, 52);
+  assert.equal(parsed.exercises[2].sets[0].loadBasis, "machine_display");
+  assert.equal(parsed.exercises[3].sets[0].weightKg, 54.4);
+  assert.equal(parsed.exercises[3].sets[0].reps, 15);
+  assert.match(parsed.exercises[3].notes, /120 фунтов/);
+  assert.match(parsed.exercises[3].notes, /диапазон 15–20/);
+  assert.equal(parsed.exercises[4].status, "substituted");
+  assert.equal(parsed.exercises[4].substitutionName, "Махи гантелями в стороны стоя");
+  assert.equal(parsed.exercises[4].sets[0].loadBasis, "per_dumbbell");
+  assert.deepEqual(reportConfirmationBlockers(parsed), []);
+});
