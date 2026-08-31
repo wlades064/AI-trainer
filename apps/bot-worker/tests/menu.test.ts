@@ -8,21 +8,26 @@ test("menu buttons map to existing commands", () => {
   assert.equal(commandFromMenuText("📈 Силовые"), "/strength");
   assert.equal(commandFromMenuText("🦴 Травмы"), "/injuries");
   assert.equal(commandFromMenuText("🤒 Болезнь"), "/illness");
-  assert.equal(commandFromMenuText("🔄 Возврат"), "/reintroductions");
+  assert.equal(commandFromMenuText("🧪 Возврат упражнения"), "/reintroductions");
+  assert.equal(commandFromMenuText("❌ Отмена"), "/cancel");
   assert.equal(commandFromMenuText("⚙️ Упражнения"), "/exercises");
-  assert.equal(commandFromMenuText("🗓 Расписание"), "/schedule");
-  assert.equal(commandFromMenuText("⏰ Напоминания"), "/reminders");
   assert.equal(commandFromMenuText("🧭 Итоги"), "/review");
   assert.equal(commandFromMenuText("🧠 Программа"), "/program");
-  assert.equal(commandFromMenuText("📐 Прогрессия"), "/progression");
-  assert.equal(commandFromMenuText("📋 Данные"), "/status");
   assert.equal(commandFromMenuText("🤖 ИИ-лимит"), "/usage");
   assert.equal(commandFromMenuText("📦 Экспорт"), "/export");
+  assert.equal(commandFromMenuText("📅 Завтра"), "📅 Завтра");
+  assert.equal(commandFromMenuText("🩺 Восстановление"), "🩺 Восстановление");
+  assert.equal(commandFromMenuText("🗓 Расписание"), "🗓 Расписание");
+  assert.equal(commandFromMenuText("⏰ Напоминания"), "⏰ Напоминания");
+  assert.equal(commandFromMenuText("📐 Прогрессия"), "📐 Прогрессия");
+  assert.equal(commandFromMenuText("📋 Данные"), "📋 Данные");
+  assert.equal(commandFromMenuText("❓ Помощь"), "❓ Помощь");
   assert.equal(commandFromMenuText("обычный отчёт"), "обычный отчёт");
 });
 
 test("main menu stays compact and persistent", () => {
-  assert.equal(MAIN_MENU_MARKUP.keyboard.length, 13);
+  assert.equal(MAIN_MENU_MARKUP.keyboard.length, 9);
   assert.equal(MAIN_MENU_MARKUP.is_persistent, true);
-  assert.ok(MAIN_MENU_MARKUP.keyboard.every((row) => row.length >= 1 && row.length <= 2));
+  assert.ok(MAIN_MENU_MARKUP.keyboard.every((row) => row.length === 2));
+  assert.deepEqual(MAIN_MENU_MARKUP.keyboard[0], [{ text: "🏋️ Сегодня" }, { text: "❌ Отмена" }]);
 });
