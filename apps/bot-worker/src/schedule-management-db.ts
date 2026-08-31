@@ -1,17 +1,92 @@
-import{loadSchedule,type D1Database}from"./db.ts";
-import{trainingForDate,type LocalDate,type ScheduleRule,type TrainingFocus}from"./domain/schedule.ts";
-import{isoDatePlus,parseScheduleAction,parseScheduleDate,parseScheduleFocus,SCHEDULE_ACTION_HELP,scheduleDateAllowed,type ScheduleAction}from"./schedule-management.ts";
+import { loadSchedule, type D1Database } from "./db.ts";
+import { trainingForDate, type LocalDate, type ScheduleRule, type TrainingFocus } from "./domain/schedule.ts";
+import { clearOrdinaryAbsence, recordOrdinaryAbsence } from "./illness-db.ts";
+import { isoDatePlus, parseScheduleAction, parseScheduleDate, parseScheduleFocus, SCHEDULE_ACTION_HELP, scheduleDateAllowed, type ScheduleAction } from "./schedule-management.ts";
 
-interface Conversation{id:number;step:1|2|3;mode:ScheduleAction|null;source_date:string|null;source_focus:Exclude<TrainingFocus,"rest">|null}
-interface ExceptionRow{local_date:string;focus:TrainingFocus;reason:string|null}
-const labels:Record<TrainingFocus,string>={chest:"грудь",back:"спина",legs:"ноги",rest:"отдых"};
-function local(date:string):LocalDate{const[year,month,day]=date.split("-").map(Number);return{year,month,day}}
-async function pending(db:D1Database,userId:number){return db.prepare("SELECT id,step,mode,source_date,source_focus FROM schedule_conversations WHERE user_id=? AND status='pending' AND expires_at>CURRENT_TIMESTAMP ORDER BY updated_at DESC LIMIT 1").bind(userId).first<Conversation>()}
-async function exception(db:D1Database,userId:number,date:string){return db.prepare("SELECT local_date,focus,reason FROM schedule_exceptions WHERE user_id=? AND local_date=?").bind(userId,date).first<ExceptionRow>()}
-function baseFocus(date:string,rules:ScheduleRule[]):TrainingFocus{return trainingForDate(local(date),rules).focus}
-async function finish(db:D1Database,id:number){await db.prepare("UPDATE schedule_conversations SET status='completed',completed_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP WHERE id=?").bind(id).run()}
-export async function loadScheduleOverride(db:D1Database,userId:number,date:string):Promise<TrainingFocus|null>{const row=await exception(db,userId,date);return row?.focus??null}
-async function schedulePreview(db:D1Database,userId:number,today:string){const rules=await loadSchedule(db,userId);const end=isoDatePlus(today,13);const result=await db.prepare("SELECT local_date,focus,reason FROM schedule_exceptions WHERE user_id=? AND local_date>=? AND local_date<=? ORDER BY local_date").bind(userId,today,end).all<ExceptionRow>();const overrides=new Map((result.results??[]).map((row)=>[row.local_date,row]));const lines=["Расписание на 14 дней:"];for(let offset=0;offset<14;offset++){const date=isoDatePlus(today,offset);const row=overrides.get(date);const focus=row?.focus??baseFocus(date,rules);if(focus!=="rest"||row)lines.push(`• ${date}: ${labels[focus]}${row?" (разовое изменение)":""}`)}return lines.join("\n")}
-export async function startScheduleConversation(db:D1Database,userId:number,today:string):Promise<string>{const current=await pending(db,userId);if(!current){await db.prepare("UPDATE schedule_conversations SET status='expired' WHERE user_id=? AND status='pending'").bind(userId).run();await db.prepare("INSERT INTO schedule_conversations(user_id,step,status,expires_at)VALUES(?,1,'pending',datetime('now','+2 days'))").bind(userId).run()}return`${await schedulePreview(db,userId,today)}\n\n${SCHEDULE_ACTION_HELP}`}
-export async function cancelScheduleConversation(db:D1Database,userId:number):Promise<boolean>{const row=await pending(db,userId);if(!row)return false;await db.prepare("UPDATE schedule_conversations SET status='cancelled',updated_at=CURRENT_TIMESTAMP WHERE id=?").bind(row.id).run();return true}
-export async function answerScheduleConversation(db:D1Database,userId:number,text:string,today:string):Promise<string|null>{const row=await pending(db,userId);if(!row)return null;if(row.step===1){const mode=parseScheduleAction(text);if(!mode)return`Не понял действие. ${SCHEDULE_ACTION_HELP}`;await db.prepare("UPDATE schedule_conversations SET mode=?,step=2,updated_at=CURRENT_TIMESTAMP WHERE id=?").bind(mode,row.id).run();return mode==="move"?"Какую тренировку переносим? Напиши сегодня, завтра или дату ГГГГ-ММ-ДД.":mode==="cancel"?"Какую дату сделать днём отдыха?":"add"===mode?"На какую свободную дату добавить тренировку?":"Для какой даты сбросить разовое изменение?"}if(!row.mode)throw new Error("Повреждён диалог расписания");if(row.step===2){const date=parseScheduleDate(text,today);if(!date||!scheduleDateAllowed(date,today))return"Нужна корректная дата от сегодня до 90 дней вперёд: сегодня, завтра или ГГГГ-ММ-ДД.";const existing=await exception(db,userId,date);const rules=await loadSchedule(db,userId);if(row.mode==="reset"){if(!existing)return"На эту дату нет разового изменения.";let pairedDate:string|null=null;try{const reason=JSON.parse(existing.reason??"{}");if(reason.kind==="move")pairedDate=reason.pairedDate??null}catch{}await db.prepare("DELETE FROM schedule_exceptions WHERE user_id=? AND local_date=?").bind(userId,date).run();if(pairedDate){const pair=await exception(db,userId,pairedDate);try{const reason=JSON.parse(pair?.reason??"{}");if(reason.kind==="move"&&reason.pairedDate===date)await db.prepare("DELETE FROM schedule_exceptions WHERE user_id=? AND local_date=?").bind(userId,pairedDate).run()}catch{}}await finish(db,row.id);return`Разовое изменение для ${date}${pairedDate?` и связанной даты ${pairedDate}`:""} сброшено. Базовое расписание восстановлено.`}if(existing)return"На эту дату уже есть разовое изменение. Сначала используй «сбросить».";const focus=baseFocus(date,rules);if(row.mode==="cancel"){await db.prepare("INSERT INTO schedule_exceptions(user_id,local_date,focus,reason)VALUES(?,?,'rest',?)").bind(userId,date,JSON.stringify({kind:"cancel"})).run();await finish(db,row.id);return`${date}: тренировка отменена, установлен отдых. Базовое недельное расписание не изменилось.`}if(row.mode==="move"){if(focus==="rest")return"На исходную дату по расписанию нет тренировки.";await db.prepare("UPDATE schedule_conversations SET source_date=?,source_focus=?,step=3,updated_at=CURRENT_TIMESTAMP WHERE id=?").bind(date,focus,row.id).run();return`Куда перенести тренировку «${labels[focus]}»? Напиши свободную дату.`}if(focus!=="rest")return`На ${date} уже стоит тренировка «${labels[focus]}». Выбери свободную дату.`;await db.prepare("UPDATE schedule_conversations SET source_date=?,step=3,updated_at=CURRENT_TIMESTAMP WHERE id=?").bind(date,row.id).run();return"Какую группу добавить: грудь, спина или ноги?"}if(!row.source_date)throw new Error("В диалоге расписания отсутствует дата");if(row.mode==="move"){const target=parseScheduleDate(text,today);if(!target||!scheduleDateAllowed(target,today)||target===row.source_date)return"Нужна другая свободная дата в пределах 90 дней.";if(await exception(db,userId,target))return"На целевую дату уже есть разовое изменение.";const rules=await loadSchedule(db,userId);if(baseFocus(target,rules)!=="rest")return"На целевую дату уже приходится базовая тренировка. Выбери день отдыха.";if(!row.source_focus)throw new Error("Не сохранена группа переносимой тренировки");await db.prepare("INSERT INTO schedule_exceptions(user_id,local_date,focus,reason)VALUES(?,?,?,?)").bind(userId,target,row.source_focus,JSON.stringify({kind:"move",pairedDate:row.source_date})).run();await db.prepare("INSERT INTO schedule_exceptions(user_id,local_date,focus,reason)VALUES(?,?,'rest',?)").bind(userId,row.source_date,JSON.stringify({kind:"move",pairedDate:target})).run();await finish(db,row.id);return`Тренировка «${labels[row.source_focus]}» перенесена с ${row.source_date} на ${target}.` }const focus=parseScheduleFocus(text);if(!focus)return"Ответь: грудь, спина или ноги.";await db.prepare("INSERT INTO schedule_exceptions(user_id,local_date,focus,reason)VALUES(?,?,?,?)").bind(userId,row.source_date,focus,JSON.stringify({kind:"add"})).run();await finish(db,row.id);return`${row.source_date}: разово добавлена тренировка «${labels[focus]}».`}
+interface Conversation { id: number; step: 1 | 2 | 3; mode: ScheduleAction | null; source_date: string | null; source_focus: Exclude<TrainingFocus, "rest"> | null }
+interface ExceptionRow { local_date: string; focus: TrainingFocus; reason: string | null }
+const labels: Record<TrainingFocus, string> = { chest: "грудь", back: "спина", legs: "ноги", rest: "отдых" };
+function local(date: string): LocalDate { const [year, month, day] = date.split("-").map(Number); return { year, month, day }; }
+async function pending(db: D1Database, userId: number) { return db.prepare("SELECT id,step,mode,source_date,source_focus FROM schedule_conversations WHERE user_id=? AND status='pending' AND expires_at>CURRENT_TIMESTAMP ORDER BY updated_at DESC LIMIT 1").bind(userId).first<Conversation>(); }
+async function exception(db: D1Database, userId: number, date: string) { return db.prepare("SELECT local_date,focus,reason FROM schedule_exceptions WHERE user_id=? AND local_date=?").bind(userId, date).first<ExceptionRow>(); }
+function baseFocus(date: string, rules: ScheduleRule[]): TrainingFocus { return trainingForDate(local(date), rules).focus; }
+async function finish(db: D1Database, id: number) { await db.prepare("UPDATE schedule_conversations SET status='completed',completed_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP WHERE id=?").bind(id).run(); }
+export async function loadScheduleOverride(db: D1Database, userId: number, date: string): Promise<TrainingFocus | null> { const row = await exception(db, userId, date); return row?.focus ?? null; }
+
+async function schedulePreview(db: D1Database, userId: number, today: string) {
+  const rules = await loadSchedule(db, userId);
+  const end = isoDatePlus(today, 13);
+  const result = await db.prepare("SELECT local_date,focus,reason FROM schedule_exceptions WHERE user_id=? AND local_date>=? AND local_date<=? ORDER BY local_date").bind(userId, today, end).all<ExceptionRow>();
+  const overrides = new Map((result.results ?? []).map((row) => [row.local_date, row]));
+  const lines = ["Расписание на 14 дней:"];
+  for (let offset = 0; offset < 14; offset++) {
+    const date = isoDatePlus(today, offset); const row = overrides.get(date); const focus = row?.focus ?? baseFocus(date, rules);
+    if (focus !== "rest" || row) lines.push(`• ${date}: ${labels[focus]}${row ? " (разовое изменение)" : ""}`);
+  }
+  return lines.join("\n");
+}
+
+export async function startScheduleConversation(db: D1Database, userId: number, today: string): Promise<string> {
+  if (!await pending(db, userId)) {
+    await db.prepare("UPDATE schedule_conversations SET status='expired' WHERE user_id=? AND status='pending'").bind(userId).run();
+    await db.prepare("INSERT INTO schedule_conversations(user_id,step,status,expires_at)VALUES(?,1,'pending',datetime('now','+2 days'))").bind(userId).run();
+  }
+  return `${await schedulePreview(db, userId, today)}\n\n${SCHEDULE_ACTION_HELP}`;
+}
+
+export async function cancelScheduleConversation(db: D1Database, userId: number): Promise<boolean> {
+  const row = await pending(db, userId); if (!row) return false;
+  await db.prepare("UPDATE schedule_conversations SET status='cancelled',updated_at=CURRENT_TIMESTAMP WHERE id=?").bind(row.id).run(); return true;
+}
+
+export async function answerScheduleConversation(db: D1Database, userId: number, text: string, today: string): Promise<string | null> {
+  const row = await pending(db, userId); if (!row) return null;
+  if (row.step === 1) {
+    const mode = parseScheduleAction(text); if (!mode) return `Не понял действие. ${SCHEDULE_ACTION_HELP}`;
+    await db.prepare("UPDATE schedule_conversations SET mode=?,step=2,updated_at=CURRENT_TIMESTAMP WHERE id=?").bind(mode, row.id).run();
+    return mode === "move" ? "Какую тренировку переносим? Напиши сегодня, завтра или дату ГГГГ-ММ-ДД."
+      : mode === "cancel" ? "Какую дату сделать днём отдыха?" : mode === "add" ? "На какую свободную дату добавить тренировку?" : "Для какой даты сбросить разовое изменение?";
+  }
+  if (!row.mode) throw new Error("Повреждён диалог расписания");
+  if (row.step === 2) {
+    const date = parseScheduleDate(text, today); if (!date || !scheduleDateAllowed(date, today)) return "Нужна корректная дата от сегодня до 90 дней вперёд: сегодня, завтра или ГГГГ-ММ-ДД.";
+    const existing = await exception(db, userId, date); const rules = await loadSchedule(db, userId);
+    if (row.mode === "reset") {
+      if (!existing) return "На эту дату нет разового изменения.";
+      let pairedDate: string | null = null;
+      try { const reason = JSON.parse(existing.reason ?? "{}"); if (reason.kind === "move") pairedDate = reason.pairedDate ?? null; } catch { /* Нет надёжной связанной даты. */ }
+      await db.prepare("DELETE FROM schedule_exceptions WHERE user_id=? AND local_date=?").bind(userId, date).run(); await clearOrdinaryAbsence(db, userId, date);
+      if (pairedDate) {
+        const pair = await exception(db, userId, pairedDate);
+        try { const reason = JSON.parse(pair?.reason ?? "{}"); if (reason.kind === "move" && reason.pairedDate === date) await db.prepare("DELETE FROM schedule_exceptions WHERE user_id=? AND local_date=?").bind(userId, pairedDate).run(); } catch { /* Повреждённая причина не разрешает удалять вторую запись. */ }
+      }
+      await finish(db, row.id); return `Разовое изменение для ${date}${pairedDate ? ` и связанной даты ${pairedDate}` : ""} сброшено. Базовое расписание восстановлено.`;
+    }
+    if (existing) return "На эту дату уже есть разовое изменение. Сначала используй «сбросить».";
+    const focus = baseFocus(date, rules);
+    if (row.mode === "cancel") {
+      await db.prepare("INSERT INTO schedule_exceptions(user_id,local_date,focus,reason)VALUES(?,?,'rest',?)").bind(userId, date, JSON.stringify({ kind: "cancel" })).run();
+      if (focus !== "rest") await recordOrdinaryAbsence(db, userId, date, focus);
+      await finish(db, row.id); return `${date}: тренировка отменена, установлен отдых. Пропуск сохранён как обычный; базовое недельное расписание не изменилось.`;
+    }
+    if (row.mode === "move") {
+      if (focus === "rest") return "На исходную дату по расписанию нет тренировки.";
+      await db.prepare("UPDATE schedule_conversations SET source_date=?,source_focus=?,step=3,updated_at=CURRENT_TIMESTAMP WHERE id=?").bind(date, focus, row.id).run(); return `Куда перенести тренировку «${labels[focus]}»? Напиши свободную дату.`;
+    }
+    if (focus !== "rest") return `На ${date} уже стоит тренировка «${labels[focus]}». Выбери свободную дату.`;
+    await db.prepare("UPDATE schedule_conversations SET source_date=?,step=3,updated_at=CURRENT_TIMESTAMP WHERE id=?").bind(date, row.id).run(); return "Какую группу добавить: грудь, спина или ноги?";
+  }
+  if (!row.source_date) throw new Error("В диалоге расписания отсутствует дата");
+  if (row.mode === "move") {
+    const target = parseScheduleDate(text, today); if (!target || !scheduleDateAllowed(target, today) || target === row.source_date) return "Нужна другая свободная дата в пределах 90 дней.";
+    if (await exception(db, userId, target)) return "На целевую дату уже есть разовое изменение.";
+    const rules = await loadSchedule(db, userId); if (baseFocus(target, rules) !== "rest") return "На целевую дату уже приходится базовая тренировка. Выбери день отдыха.";
+    if (!row.source_focus) throw new Error("Не сохранена группа переносимой тренировки");
+    await db.prepare("INSERT INTO schedule_exceptions(user_id,local_date,focus,reason)VALUES(?,?,?,?)").bind(userId, target, row.source_focus, JSON.stringify({ kind: "move", pairedDate: row.source_date })).run();
+    await db.prepare("INSERT INTO schedule_exceptions(user_id,local_date,focus,reason)VALUES(?,?,'rest',?)").bind(userId, row.source_date, JSON.stringify({ kind: "move", pairedDate: target })).run();
+    await finish(db, row.id); return `Тренировка «${labels[row.source_focus]}» перенесена с ${row.source_date} на ${target}.`;
+  }
+  const focus = parseScheduleFocus(text); if (!focus) return "Ответь: грудь, спина или ноги.";
+  await db.prepare("INSERT INTO schedule_exceptions(user_id,local_date,focus,reason)VALUES(?,?,?,?)").bind(userId, row.source_date, focus, JSON.stringify({ kind: "add" })).run();
+  await finish(db, row.id); return `${row.source_date}: разово добавлена тренировка «${labels[focus]}».`;
+}

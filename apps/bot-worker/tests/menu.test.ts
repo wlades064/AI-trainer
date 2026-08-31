@@ -7,6 +7,7 @@ test("menu buttons map to existing commands", () => {
   assert.equal(commandFromMenuText("📊 Прогресс"), "/progress");
   assert.equal(commandFromMenuText("📈 Силовые"), "/strength");
   assert.equal(commandFromMenuText("🦴 Травмы"), "/injuries");
+  assert.equal(commandFromMenuText("🤒 Болезнь"), "/illness");
   assert.equal(commandFromMenuText("🔄 Возврат"), "/reintroductions");
   assert.equal(commandFromMenuText("⚙️ Упражнения"), "/exercises");
   assert.equal(commandFromMenuText("🗓 Расписание"), "/schedule");
@@ -21,7 +22,7 @@ test("menu buttons map to existing commands", () => {
 });
 
 test("main menu stays compact and persistent", () => {
-  assert.equal(MAIN_MENU_MARKUP.keyboard.length, 12);
+  assert.equal(MAIN_MENU_MARKUP.keyboard.length, 13);
   assert.equal(MAIN_MENU_MARKUP.is_persistent, true);
   assert.ok(MAIN_MENU_MARKUP.keyboard.every((row) => row.length >= 1 && row.length <= 2));
 });

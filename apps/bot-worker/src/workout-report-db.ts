@@ -214,6 +214,7 @@ export async function confirmPendingReportDraft(db: D1Database, userId: number):
   await db.prepare(
     "UPDATE workout_sessions SET completed_at = ?, confirmed_at = ? WHERE id = ?",
   ).bind(now, now, session.id).run();
+  await db.prepare("DELETE FROM training_absences WHERE user_id=? AND local_date=?").bind(userId, draft.report.date).run();
   await db.prepare("UPDATE workout_plans SET status = 'completed' WHERE id = ?").bind(plan.id).run();
   await db.prepare(
     "UPDATE workout_report_drafts SET status = 'confirmed', confirmed_at = ? WHERE id = ? AND status = 'pending'",
