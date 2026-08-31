@@ -1,16 +1,24 @@
-export type MeasurementStep = 1 | 2 | 3 | 4 | 5;
+export type MeasurementStep = 1 | 2 | 3 | 4 | 5 | 6 | 7;
 
 export const MEASUREMENT_KINDS = [
-  ["chest_circumference", "грудь"],
+  ["shoulders_inhale_circumference", "плечи на вдохе"],
+  ["shoulders_exhale_circumference", "плечи на выдохе"],
+  ["chest_inhale_circumference", "грудь на вдохе"],
+  ["chest_exhale_circumference", "грудь на выдохе"],
   ["abdomen_circumference", "живот"],
+  ["thigh_circumference", "бедро"],
   ["biceps_circumference", "бицепс"],
-  ["shoulders_circumference", "плечи"],
-  ["leg_circumference", "нога"],
+] as const;
+
+export const LEGACY_MEASUREMENT_KINDS = [
+  ["chest_circumference", "грудь, старый формат"],
+  ["shoulders_circumference", "плечи, старый формат"],
+  ["leg_circumference", "нога, старый формат"],
 ] as const;
 
 export function measurementQuestion(step: MeasurementStep): string {
   const label = MEASUREMENT_KINDS[step - 1][1];
-  return `Замеры ${step}/5. Укажи обхват «${label}» в сантиметрах, например 102.5.`;
+  return `Замеры ${step}/${MEASUREMENT_KINDS.length}. Укажи обхват «${label}» в сантиметрах, например 102.5.`;
 }
 
 export function parseCentimeters(text: string): number | null {

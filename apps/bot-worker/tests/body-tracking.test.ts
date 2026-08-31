@@ -1,5 +1,14 @@
 import test from "node:test"; import assert from "node:assert/strict";
-import { formatDelta, nutritionTrendWindows, parseCentimeters, parseWeightCommand } from "../src/body-tracking.ts";
+import { formatDelta, measurementQuestion, MEASUREMENT_KINDS, nutritionTrendWindows, parseCentimeters, parseWeightCommand } from "../src/body-tracking.ts";
+test("measurement protocol separates breathing phases and uses thigh",()=>{assert.deepEqual(MEASUREMENT_KINDS,[
+  ["shoulders_inhale_circumference","плечи на вдохе"],
+  ["shoulders_exhale_circumference","плечи на выдохе"],
+  ["chest_inhale_circumference","грудь на вдохе"],
+  ["chest_exhale_circumference","грудь на выдохе"],
+  ["abdomen_circumference","живот"],
+  ["thigh_circumference","бедро"],
+  ["biceps_circumference","бицепс"],
+]);assert.match(measurementQuestion(7),/Замеры 7\/7.*бицепс.*сантиметрах/s)});
 test("body values accept Russian decimal separators",()=>{assert.equal(parseCentimeters("102,5 см"),102.5);assert.equal(parseWeightCommand("/weight 87,35 кг"),87.35)});
 test("body values reject implausible numbers",()=>{assert.equal(parseCentimeters("10"),null);assert.equal(parseWeightCommand("/weight 500"),null)});
 test("measurement delta is signed",()=>{assert.equal(formatDelta(90,91.2),"-1.2");assert.equal(formatDelta(92,91.2),"+0.8")});

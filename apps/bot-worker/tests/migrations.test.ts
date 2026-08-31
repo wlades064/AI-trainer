@@ -4,10 +4,12 @@ import { readdirSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
+const migrationsDirectory = resolve(import.meta.dirname, "../../../db/migrations");
+const migrationFiles = readdirSync(migrationsDirectory).filter((name) => name.endsWith(".sql")).sort();
+
 test("all migrations build a fresh database and enforce illness invariants", () => {
   const database = new DatabaseSync(":memory:");
-  const migrationsDirectory = resolve(import.meta.dirname, "../../../db/migrations");
-  for (const filename of readdirSync(migrationsDirectory).filter((name) => name.endsWith(".sql")).sort()) {
+  for (const filename of migrationFiles) {
     database.exec(readFileSync(resolve(migrationsDirectory, filename), "utf8"));
   }
   database.prepare("INSERT INTO users(telegram_user_id)VALUES(?)").run("owner");
@@ -23,6 +25,25 @@ test("all migrations build a fresh database and enforce illness invariants", () 
   );
   assert.throws(
     () => database.prepare("INSERT INTO training_absences(user_id,local_date,focus,reason)VALUES(1,'2026-09-02','back','illness')").run(),
+    /CHECK constraint failed/,
+  );
+  database.close();
+});
+
+test("measurement migration expires only unfinished legacy dialogs", () => {
+  const database = new DatabaseSync(":memory:");
+  for (const filename of migrationFiles.filter((name) => name < "0037")) {
+    database.exec(readFileSync(resolve(migrationsDirectory, filename), "utf8"));
+  }
+  database.prepare("INSERT INTO users(telegram_user_id)VALUES('owner')").run();
+  database.prepare("INSERT INTO measurement_conversations(user_id,step,values_json,status,expires_at)VALUES(1,3,'{}','pending','2099-01-01')").run();
+  database.prepare("INSERT INTO measurement_conversations(user_id,step,values_json,status,expires_at)VALUES(1,5,'{}','completed','2099-01-01')").run();
+  database.exec(readFileSync(resolve(migrationsDirectory, "0037_measurement_breathing_phases.sql"), "utf8"));
+  const statuses = database.prepare("SELECT status FROM measurement_conversations ORDER BY id").all().map((row) => row.status);
+  assert.deepEqual(statuses, ["expired", "completed"]);
+  database.prepare("INSERT INTO measurement_conversations(user_id,step,status,expires_at)VALUES(1,7,'pending','2099-01-01')").run();
+  assert.throws(
+    () => database.prepare("INSERT INTO measurement_conversations(user_id,step,status,expires_at)VALUES(1,8,'pending','2099-01-01')").run(),
     /CHECK constraint failed/,
   );
   database.close();

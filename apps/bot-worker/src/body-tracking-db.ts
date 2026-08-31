@@ -1,5 +1,5 @@
 import type { D1Database } from "./db.ts";
-import { formatDelta, measurementQuestion, MEASUREMENT_KINDS, nutritionTrendWindows, parseCentimeters, type MeasurementStep, type NutritionTrendDay } from "./body-tracking.ts";
+import { formatDelta, LEGACY_MEASUREMENT_KINDS, measurementQuestion, MEASUREMENT_KINDS, nutritionTrendWindows, parseCentimeters, type MeasurementStep, type NutritionTrendDay } from "./body-tracking.ts";
 
 interface ConversationRow { id: number; step: MeasurementStep; values_json: string }
 
@@ -27,7 +27,7 @@ export async function answerMeasurementConversation(db: D1Database, userId: numb
   if (value === null) return `Нужно число от 20 до 250 см, максимум с одним знаком после запятой.\n\n${measurementQuestion(row.step)}`;
   const values = JSON.parse(row.values_json) as Record<string, number>;
   const [kind] = MEASUREMENT_KINDS[row.step - 1]; values[kind] = value;
-  if (row.step < 5) {
+  if (row.step < MEASUREMENT_KINDS.length) {
     const next = (row.step + 1) as MeasurementStep;
     await db.prepare("UPDATE measurement_conversations SET step=?, values_json=?, updated_at=CURRENT_TIMESTAMP WHERE id=?")
       .bind(next, JSON.stringify(values), row.id).run();
@@ -62,7 +62,7 @@ export async function progressSummary(db: D1Database, userId: number, localDate:
   const byKind = new Map<string, MeasurementRow[]>();
   for (const item of measurements.results ?? []) { const list=byKind.get(item.kind)??[]; list.push(item); byKind.set(item.kind,list); }
   const lines: string[] = ["Динамика:"];
-  const labels = new Map([...MEASUREMENT_KINDS, ["weight", "вес"]] as Array<readonly [string,string]>);
+  const labels = new Map([...MEASUREMENT_KINDS, ...LEGACY_MEASUREMENT_KINDS, ["weight", "вес"]] as Array<readonly [string,string]>);
   for (const [kind, label] of labels) {
     const list=byKind.get(kind); if (!list?.length) continue;
     const current=list[0]; const previous=list[1];

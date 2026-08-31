@@ -1,6 +1,7 @@
 import type { D1Database } from "./db.ts";
 import { localDateAt, toIsoDate, weekday } from "./domain/schedule.ts";
 import { parseReminderInput, REMINDER_HELP } from "./reminders.ts";
+import { MEASUREMENT_KINDS } from "./body-tracking.ts";
 
 type ReminderType = "weight" | "measurements";
 interface ConversationRow { id: number }
@@ -82,10 +83,12 @@ async function alreadyRecorded(db: D1Database, row: DueRow, localDate: string): 
       .bind(row.user_id, localDate).first<{ id: number }>()) !== null;
   }
   const month = localDate.slice(0, 7);
+  const kinds = MEASUREMENT_KINDS.map(([kind]) => kind);
+  const placeholders = kinds.map(() => "?").join(",");
   const count = await db.prepare(`SELECT COUNT(DISTINCT kind) AS count FROM body_measurements
-    WHERE user_id=? AND substr(measured_at,1,7)=? AND kind IN ('chest','abdomen','biceps','shoulders','legs')`)
-    .bind(row.user_id, month).first<{ count: number }>();
-  return Number(count?.count ?? 0) >= 5;
+    WHERE user_id=? AND substr(measured_at,1,7)=? AND kind IN (${placeholders})`)
+    .bind(row.user_id, month, ...kinds).first<{ count: number }>();
+  return Number(count?.count ?? 0) >= kinds.length;
 }
 
 export async function runDueReminders(
