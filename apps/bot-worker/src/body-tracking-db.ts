@@ -1,5 +1,5 @@
 import type { D1Database } from "./db.ts";
-import { formatDelta, LEGACY_MEASUREMENT_KINDS, measurementQuestion, MEASUREMENT_KINDS, nutritionTrendWindows, parseCentimeters, type MeasurementStep, type NutritionTrendDay } from "./body-tracking.ts";
+import { formatDelta, formatMeasurementHistory, LEGACY_MEASUREMENT_KINDS, measurementQuestion, MEASUREMENT_KINDS, nutritionTrendWindows, parseCentimeters, type MeasurementHistorySnapshot, type MeasurementKind, type MeasurementStep, type NutritionTrendDay } from "./body-tracking.ts";
 
 interface ConversationRow { id: number; step: MeasurementStep; values_json: string }
 
@@ -52,6 +52,29 @@ export async function saveEmergencyWeight(db: D1Database, userId: number, localD
 }
 
 interface MeasurementRow { measured_at: string; kind: string; value: number; unit: string }
+export async function measurementHistory(db: D1Database, userId: number): Promise<string> {
+  const kinds = MEASUREMENT_KINDS.map(([kind]) => kind);
+  const placeholders = kinds.map(() => "?").join(",");
+  const rows = await db.prepare(`WITH recent_dates AS (
+      SELECT DISTINCT measured_at FROM body_measurements
+      WHERE user_id=? AND kind IN (${placeholders})
+      ORDER BY measured_at DESC LIMIT 6
+    )
+    SELECT bm.measured_at,bm.kind,bm.value,bm.unit
+    FROM body_measurements bm
+    JOIN recent_dates dates ON dates.measured_at=bm.measured_at
+    WHERE bm.user_id=? AND bm.kind IN (${placeholders})
+    ORDER BY bm.measured_at DESC,bm.id`)
+    .bind(userId, ...kinds, userId, ...kinds).all<MeasurementRow>();
+  const byDate = new Map<string, MeasurementHistorySnapshot>();
+  for (const row of rows.results ?? []) {
+    const snapshot = byDate.get(row.measured_at) ?? { date: row.measured_at, values: {} };
+    snapshot.values[row.kind as MeasurementKind] = row.value;
+    byDate.set(row.measured_at, snapshot);
+  }
+  return formatMeasurementHistory([...byDate.values()]);
+}
+
 export async function progressSummary(db: D1Database, userId: number, localDate: string): Promise<string> {
   const measurements = await db.prepare(`SELECT measured_at, kind, value, unit FROM body_measurements
     WHERE user_id=? ORDER BY measured_at DESC LIMIT 80`).bind(userId).all<MeasurementRow>();

@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { deleteTelegramMessages, sendTelegramMessage } from "../src/telegram.ts";
+import { answerTelegramCallbackQuery, deleteTelegramMessages, sendTelegramMessage } from "../src/telegram.ts";
 
 test("sendMessage returns the Telegram message id for later cleanup", async () => {
   const fakeFetch: typeof fetch = async () => Response.json({ ok: true, result: { message_id: 321 } });
@@ -36,4 +36,17 @@ test("deleteMessages rejects a Telegram-level error even with HTTP 200", async (
     deleteTelegramMessages("secret-token", 123, [10], fakeFetch),
     /Telegram deleteMessages failed/,
   );
+});
+
+test("callback query is acknowledged without exposing the token in its body", async () => {
+  let body = "";
+  const fakeFetch: typeof fetch = async (_input, init) => {
+    body = String(init?.body);
+    return Response.json({ ok: true, result: true });
+  };
+
+  await answerTelegramCallbackQuery("secret-token", "callback-1", fakeFetch);
+
+  assert.deepEqual(JSON.parse(body), { callback_query_id: "callback-1" });
+  assert.doesNotMatch(body, /secret-token/);
 });

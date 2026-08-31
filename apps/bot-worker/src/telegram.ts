@@ -17,7 +17,18 @@ export interface TelegramPhotoSize {
   file_size?: number;
 }
 
-export interface TelegramUpdate { update_id: number; message?: TelegramMessage }
+export interface TelegramCallbackQuery {
+  id: string;
+  from: { id: number };
+  data?: string;
+  message?: TelegramMessage;
+}
+
+export interface TelegramUpdate {
+  update_id: number;
+  message?: TelegramMessage;
+  callback_query?: TelegramCallbackQuery;
+}
 
 export async function sendTelegramMessage(
   token: string,
@@ -57,6 +68,21 @@ export async function deleteTelegramMessages(
     const payload = await response.json<{ ok: boolean; result?: boolean }>();
     if (!payload.ok || payload.result !== true) throw new Error("Telegram deleteMessages failed");
   }
+}
+
+export async function answerTelegramCallbackQuery(
+  token: string,
+  callbackQueryId: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<void> {
+  const response = await fetchImpl(`https://api.telegram.org/bot${token}/answerCallbackQuery`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ callback_query_id: callbackQueryId }),
+  });
+  if (!response.ok) throw new Error(`Telegram answerCallbackQuery failed: ${response.status}`);
+  const payload = await response.json<{ ok: boolean; result?: boolean }>();
+  if (!payload.ok || payload.result !== true) throw new Error("Telegram answerCallbackQuery failed");
 }
 
 export async function sendTelegramDocument(token: string, chatId: number, filename: string, content: string, caption: string, fetchImpl: typeof fetch = fetch): Promise<void> {

@@ -10,6 +10,13 @@ export const MEASUREMENT_KINDS = [
   ["biceps_circumference", "бицепс"],
 ] as const;
 
+export type MeasurementKind = typeof MEASUREMENT_KINDS[number][0];
+
+export interface MeasurementHistorySnapshot {
+  date: string;
+  values: Partial<Record<MeasurementKind, number>>;
+}
+
 export const LEGACY_MEASUREMENT_KINDS = [
   ["chest_circumference", "грудь, старый формат"],
   ["shoulders_circumference", "плечи, старый формат"],
@@ -38,6 +45,27 @@ export function parseWeightCommand(text: string): number | null {
 export function formatDelta(value: number, previous: number): string {
   const delta = Math.round((value - previous) * 10) / 10;
   return `${delta > 0 ? "+" : ""}${delta}`;
+}
+
+export function formatMeasurementHistory(snapshots: MeasurementHistorySnapshot[]): string {
+  if (!snapshots.length) return "История замеров пока пустая.";
+  const lines = ["История замеров:"];
+  for (let index = 0; index < snapshots.length; index += 1) {
+    const current = snapshots[index];
+    const previous = snapshots[index + 1];
+    lines.push("", current.date);
+    for (const [kind, label] of MEASUREMENT_KINDS) {
+      const value = current.values[kind];
+      if (value === undefined) {
+        lines.push(`• ${label}: —`);
+        continue;
+      }
+      const previousValue = previous?.values[kind];
+      const delta = previousValue === undefined ? "" : ` (${formatDelta(value, previousValue)})`;
+      lines.push(`• ${label}: ${value} см${delta}`);
+    }
+  }
+  return lines.join("\n");
 }
 
 export interface NutritionTrendDay {

@@ -16,7 +16,7 @@ import {
 import { filterSafeExercises } from "./domain/safety.ts";
 import { programmingRules } from "./domain/programming.ts";
 import { generateWorkout, type GeneratedWorkout } from "./gemini.ts";
-import { deleteTelegramMessages, downloadTelegramPhoto, downloadTelegramTextDocument, downloadTelegramVoice, selectEfficientPhoto, sendTelegramDocument, sendTelegramMessage, type TelegramUpdate } from "./telegram.ts";
+import { answerTelegramCallbackQuery, deleteTelegramMessages, downloadTelegramPhoto, downloadTelegramTextDocument, downloadTelegramVoice, selectEfficientPhoto, sendTelegramDocument, sendTelegramMessage, type TelegramUpdate } from "./telegram.ts";
 import {
   cancelPendingReportDraft,
   confirmPendingReportDraft,
@@ -45,10 +45,10 @@ import { evaluateReadiness } from "./domain/safety.ts";
 import { formatNutritionDraft, parseNutritionScreenshot } from "./nutrition-image.ts";
 import { cancelNutritionDraft, confirmNutritionDraft, findNutritionImage, loadPendingNutritionDraft, saveNutritionDraft } from "./nutrition-db.ts";
 import { parseWeightCommand } from "./body-tracking.ts";
-import { answerMeasurementConversation, cancelMeasurementConversation, progressSummary, saveEmergencyWeight, startMeasurementConversation } from "./body-tracking-db.ts";
+import { answerMeasurementConversation, cancelMeasurementConversation, progressSummary, saveEmergencyWeight } from "./body-tracking-db.ts";
 import { goalHelp, GOAL_LABELS, parseGoalCommand } from "./goal.ts";
 import { loadCompactCoachingContext, loadCurrentGoal, setCurrentGoal } from "./goal-db.ts";
-import { commandFromMenuText, MAIN_MENU_MARKUP } from "./menu.ts";
+import { commandFromMenuText, MAIN_MENU_MARKUP, MEASUREMENT_MENU_MARKUP } from "./menu.ts";
 import { parseStopSupplementCommand, parseSupplementCommand, SUPPLEMENT_HELP } from "./supplements.ts";
 import { addSupplement, listSupplements, stopSupplement } from "./supplements-db.ts";
 import { LAB_HELP, parseCancelLabCommand, parseLabCommand } from "./labs.ts";
@@ -80,6 +80,8 @@ import { answerIllnessConversation, cancelIllnessConversation, loadIllnessTraini
 import { findTelegramUserId, loadActiveTransientDialogs, loadOrphanedTransientDialogKeys } from "./transient-dialog-db.ts";
 import { planTransientDialogMessages } from "./transient-dialog.ts";
 import { deliverReplyWithTransientCleanup } from "./transient-dialog-delivery.ts";
+import { cleanupTransientDialogs } from "./transient-dialog-cleanup.ts";
+import { runMeasurementMenuAction } from "./measurement-menu.ts";
 
 interface Env {
   DB: D1Database;
@@ -438,6 +440,73 @@ async function labPhotoReply(update: TelegramUpdate, env: Env, telegramUserId: s
   }
 }
 
+async function recordDialogCleanupFailure(env: Env, error: unknown): Promise<void> {
+  const description = error instanceof Error ? error.message : "unknown";
+  await env.DB.prepare("INSERT INTO system_events(event_type,payload_json)VALUES('telegram_dialog_cleanup_failed',?)")
+    .bind(JSON.stringify({ error: description.slice(0, 300) })).run();
+}
+
+async function handleCallbackQuery(update: TelegramUpdate, env: Env): Promise<Response> {
+  const callback = update.callback_query;
+  if (!callback) return new Response("ok");
+  if (String(callback.from.id) !== env.ALLOWED_TELEGRAM_USER_ID) return new Response("forbidden", { status: 403 });
+  await answerTelegramCallbackQuery(env.TELEGRAM_BOT_TOKEN, callback.id);
+  const message = callback.message;
+  if (!message || !callback.data?.startsWith("measure:")) return new Response("ok");
+
+  const telegramUserId = String(callback.from.id);
+  const user = await ensureUser(env.DB, telegramUserId, env.APP_TIMEZONE || "Europe/Samara");
+  const transientDialogsBefore = await loadActiveTransientDialogs(env.DB, user.id);
+  const action = await runMeasurementMenuAction(env.DB, user.id, callback.data);
+  if (!action) return new Response("ok");
+  const transientDialogsAfter = await loadActiveTransientDialogs(env.DB, user.id);
+  const activeDialogKeys = transientDialogsAfter.map((dialog) => dialog.dialogKey);
+  const orphanedMenuKeys = await loadOrphanedTransientDialogKeys(env.DB, user.id, activeDialogKeys);
+
+  if (action.kind === "history") {
+    await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, message.chat.id, action.reply, MAIN_MENU_MARKUP);
+    try {
+      const deleted = await cleanupTransientDialogs(
+        env.DB,
+        user.id,
+        orphanedMenuKeys,
+        (chatId, messageIds) => deleteTelegramMessages(env.TELEGRAM_BOT_TOKEN, chatId, messageIds),
+      );
+      if (deleted === 0) await deleteTelegramMessages(env.TELEGRAM_BOT_TOKEN, message.chat.id, [message.message_id]);
+    } catch (error) {
+      await recordDialogCleanupFailure(env, error);
+    }
+    return new Response("ok");
+  }
+
+  const transientPlan = planTransientDialogMessages(
+    transientDialogsBefore,
+    transientDialogsAfter,
+    "/measure",
+    update.update_id,
+  );
+  transientPlan.incomingDialogKey = undefined;
+  transientPlan.cleanupDialogKeys = [...new Set([...transientPlan.cleanupDialogKeys, ...orphanedMenuKeys])];
+  try {
+    await deleteTelegramMessages(env.TELEGRAM_BOT_TOKEN, message.chat.id, [message.message_id]);
+  } catch (error) {
+    await recordDialogCleanupFailure(env, error);
+  }
+  await deliverReplyWithTransientCleanup({
+    db: env.DB,
+    userId: user.id,
+    chatId: message.chat.id,
+    incomingMessageId: message.message_id,
+    reply: action.reply,
+    replyMarkup: MAIN_MENU_MARKUP,
+    plan: transientPlan,
+    sendMessage: (text, replyMarkup) => sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, message.chat.id, text, replyMarkup),
+    deleteMessages: (chatId, messageIds) => deleteTelegramMessages(env.TELEGRAM_BOT_TOKEN, chatId, messageIds),
+    onCleanupFailure: (error) => recordDialogCleanupFailure(env, error),
+  });
+  return new Response("ok");
+}
+
 async function handleUpdate(update: TelegramUpdate, env: Env): Promise<Response> {
   const message = update.message;
   if (!message?.from || (!message.text && !message.caption && !message.photo?.length && !message.document && !message.voice)) return new Response("ok");
@@ -451,6 +520,7 @@ async function handleUpdate(update: TelegramUpdate, env: Env): Promise<Response>
   const offset = requestedDayOffset(text);
   let reply: string;
   let showMenu = false;
+  let replyMarkup: unknown;
   if(message.voice){reply=await voiceReportReply(update,env,String(message.from.id));
   } else if(message.document){reply=/^\/fatsecret(?:@\w+)?$/i.test(text)?await nutritionCsvReply(update,env,String(message.from.id)):"CSV обрабатывается только с подписью /fatsecret.";
   } else if (message.photo?.length) {
@@ -528,9 +598,8 @@ async function handleUpdate(update: TelegramUpdate, env: Env): Promise<Response>
     const user = await ensureUser(env.DB, String(message.from.id), env.APP_TIMEZONE || "Europe/Samara");
     reply = await pendingReadinessQuestion(env.DB, user.id) ?? "Нет незавершённого предтренировочного чекина. Начать его можно командой /today.";
   } else if (text === "/measure") {
-    const user = await ensureUser(env.DB, String(message.from.id), env.APP_TIMEZONE || "Europe/Samara");
-    await cancelIllnessConversation(env.DB, user.id);
-    reply = await startMeasurementConversation(env.DB, user.id);
+    reply = "Замеры: выбери действие.";
+    replyMarkup = MEASUREMENT_MENU_MARKUP;
   } else if (text === "/progress") {
     const user = await ensureUser(env.DB, String(message.from.id), env.APP_TIMEZONE || "Europe/Samara");
     const today = toIsoDate(localDateAt(new Date(), env.APP_TIMEZONE || "Europe/Samara"));
@@ -623,7 +692,12 @@ async function handleUpdate(update: TelegramUpdate, env: Env): Promise<Response>
   }
   const userId = userIdBefore ?? await findTelegramUserId(env.DB, telegramUserId);
   if (!userId) {
-    await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, message.chat.id, reply, showMenu ? MAIN_MENU_MARKUP : undefined);
+    await sendTelegramMessage(
+      env.TELEGRAM_BOT_TOKEN,
+      message.chat.id,
+      reply,
+      replyMarkup ?? (showMenu ? MAIN_MENU_MARKUP : undefined),
+    );
     return new Response("ok");
   }
   const transientDialogsAfter = await loadActiveTransientDialogs(env.DB, userId);
@@ -638,6 +712,11 @@ async function handleUpdate(update: TelegramUpdate, env: Env): Promise<Response>
     update.update_id,
     isDataUpload,
   );
+  if (text === "/measure" && !transientPlan.incomingDialogKey && !transientPlan.outgoingDialogKey) {
+    const dialogKey = `measurement_menu:${update.update_id}`;
+    transientPlan.incomingDialogKey = dialogKey;
+    transientPlan.outgoingDialogKey = dialogKey;
+  }
   const retryableCleanupKeys = await loadOrphanedTransientDialogKeys(
     env.DB,
     userId,
@@ -650,7 +729,7 @@ async function handleUpdate(update: TelegramUpdate, env: Env): Promise<Response>
     chatId: message.chat.id,
     incomingMessageId: message.message_id,
     reply,
-    replyMarkup: showMenu ? MAIN_MENU_MARKUP : undefined,
+    replyMarkup: replyMarkup ?? (showMenu ? MAIN_MENU_MARKUP : undefined),
     plan: transientPlan,
     sendMessage: (outgoingText, replyMarkup) => sendTelegramMessage(
       env.TELEGRAM_BOT_TOKEN,
@@ -659,11 +738,7 @@ async function handleUpdate(update: TelegramUpdate, env: Env): Promise<Response>
       replyMarkup,
     ),
     deleteMessages: (chatId, messageIds) => deleteTelegramMessages(env.TELEGRAM_BOT_TOKEN, chatId, messageIds),
-    onCleanupFailure: async (error) => {
-      const description = error instanceof Error ? error.message : "unknown";
-      await env.DB.prepare("INSERT INTO system_events(event_type,payload_json)VALUES('telegram_dialog_cleanup_failed',?)")
-        .bind(JSON.stringify({ error: description.slice(0, 300) })).run();
-    },
+    onCleanupFailure: (error) => recordDialogCleanupFailure(env, error),
   });
   return new Response("ok");
 }
@@ -680,7 +755,7 @@ export default {
     if (!Number.isSafeInteger(update.update_id)) return new Response("bad request", { status: 400 });
     if (!(await claimTelegramUpdate(env.DB, update.update_id))) return new Response("ok");
     try {
-      const response = await handleUpdate(update, env);
+      const response = update.callback_query ? await handleCallbackQuery(update, env) : await handleUpdate(update, env);
       await completeTelegramUpdate(env.DB, update.update_id);
       return response;
     } catch (error) {

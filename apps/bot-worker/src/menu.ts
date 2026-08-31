@@ -36,6 +36,13 @@ export const MAIN_MENU_MARKUP = {
   input_field_placeholder: "Выбери действие или напиши сообщение",
 } as const;
 
+export const MEASUREMENT_MENU_MARKUP = {
+  inline_keyboard: [[
+    { text: "Сделать замеры", callback_data: "measure:new" },
+    { text: "История замеров", callback_data: "measure:history" },
+  ]],
+} as const;
+
 export function commandFromMenuText(text: string): string {
   return MENU_COMMANDS[text.trim()] ?? text.trim();
 }

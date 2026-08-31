@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { commandFromMenuText, MAIN_MENU_MARKUP } from "../src/menu.ts";
+import { commandFromMenuText, MAIN_MENU_MARKUP, MEASUREMENT_MENU_MARKUP } from "../src/menu.ts";
 
 test("menu buttons map to existing commands", () => {
   assert.equal(commandFromMenuText("🏋️ Сегодня"), "/today");
@@ -30,4 +30,12 @@ test("main menu stays compact and persistent", () => {
   assert.equal(MAIN_MENU_MARKUP.is_persistent, true);
   assert.ok(MAIN_MENU_MARKUP.keyboard.every((row) => row.length === 2));
   assert.deepEqual(MAIN_MENU_MARKUP.keyboard[0], [{ text: "🏋️ Сегодня" }, { text: "❌ Отмена" }]);
+});
+
+test("measurement submenu has only create and history actions", () => {
+  assert.deepEqual(MEASUREMENT_MENU_MARKUP.inline_keyboard, [[
+    { text: "Сделать замеры", callback_data: "measure:new" },
+    { text: "История замеров", callback_data: "measure:history" },
+  ]]);
+  assert.equal(JSON.stringify(MEASUREMENT_MENU_MARKUP).includes("Отмена"), false);
 });
