@@ -1,6 +1,6 @@
 import type { D1Database } from "./db.ts";
 import type { GeneratedWorkout } from "./gemini.ts";
-import { nextEmphasis, type TrainingEmphasis, type TrainingFocus } from "./domain/programming.ts";
+import { nextEmphasis, type TrainingEmphasis, type TrainingFocus, type TrainingLoadMode } from "./domain/programming.ts";
 import { reportConfirmationBlockers, type WorkoutReportDraft } from "./workout-report.ts";
 
 export interface ReportPlan {
@@ -8,7 +8,7 @@ export interface ReportPlan {
   plannedFor: string;
   focus: TrainingFocus;
   emphasis: TrainingEmphasis | null;
-  loadMode: "normal" | "deload";
+  loadMode: TrainingLoadMode;
   workout: GeneratedWorkout;
 }
 
@@ -17,7 +17,7 @@ interface PlanRow {
   planned_for: string;
   focus: TrainingFocus;
   emphasis: TrainingEmphasis | null;
-  load_mode: "normal" | "deload";
+  load_mode: TrainingLoadMode;
   generated_json: string;
 }
 

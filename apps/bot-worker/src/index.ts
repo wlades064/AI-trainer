@@ -55,8 +55,10 @@ import { LAB_HELP, parseCancelLabCommand, parseLabCommand } from "./labs.ts";
 import { addLabResult, cancelLabResult, listLabResults } from "./labs-db.ts";
 import { formatLabImageDraft, parseLabScreenshot } from "./lab-image.ts";
 import { cancelLabImageDraft, confirmLabImageDraft, findLabImage, pendingLabImageDraft, saveLabImageDraft } from "./lab-image-db.ts";
-import { loadModeForDate, recoveryAssessmentDue } from "./training-load-db.ts";
-import { activeRecoveryStop, answerRecovery, cancelRecovery, startRecovery } from "./recovery-db.ts";
+import { loadModeForDate } from "./training-load-db.ts";
+import { cancelRecovery } from "./recovery-db.ts";
+import { assessAndRecordAutomaticRecovery } from "./automatic-recovery-db.ts";
+import { applyRecoveryLoadGuard } from "./automatic-recovery.ts";
 import { compactStrengthContext, strengthProgressSummary } from "./strength-analytics-db.ts";
 import { answerInjuryConversation, cancelInjuryConversation, startInjuryConversation } from "./injuries-db.ts";
 import { answerReintroductionConversation, cancelReintroductionConversation, startReintroductionConversation } from "./reintroduction-db.ts";
@@ -152,6 +154,7 @@ function formatWorkout(date: string, workout: GeneratedWorkout, reused = false):
 async function workoutReply(env: Env, telegramUserId: string): Promise<string> {
   const timeZone = env.APP_TIMEZONE || "Europe/Samara";
   const user = await ensureUser(env.DB, telegramUserId, timeZone);
+  await cancelRecovery(env.DB, user.id);
   const schedule = await loadSchedule(env.DB, user.id);
   const local = localDateAt(new Date(), timeZone);
   const localDate=toIsoDate(local);
@@ -170,23 +173,27 @@ async function workoutReply(env: Env, telegramUserId: string): Promise<string> {
   if (!decision.allowed) {
     return `${training.date}: тренировку не составляю: ${decision.reasons.join(", ")}. При резком или необычном ухудшении состояния обратись за медицинской помощью.`;
   }
-  const recoveryStop=await activeRecoveryStop(env.DB,user.id);
-  if(recoveryStop)return`${training.date}: тренировку не составляю — действует блок восстановления: ${recoveryStop.join(", ")}. Пройди «🩺 Восстановление» повторно после проверки состояния; при тревожных симптомах обратись за медицинской помощью.`;
-  const existing = await loadExistingGeneratedPlan(env.DB, user.id, training.date, training.focus, readiness.completedAt);
+  const cycleLoadMode = await loadModeForDate(env.DB, user.id, training.date);
+  const recovery = await assessAndRecordAutomaticRecovery(
+    env.DB,
+    user.id,
+    training.date,
+    readiness,
+    false,
+    illnessState.phase,
+    cycleLoadMode === "deload",
+  );
+  if (recovery.decision === "stop") {
+    return `${training.date}: тренировку не составляю — автоматическая проверка восстановления выявила: ${recovery.reasons.join(", ")}. При тревожных симптомах обратись за медицинской помощью.`;
+  }
+  const loadMode = recovery.decision;
+  const existing = await loadExistingGeneratedPlan(env.DB, user.id, training.date, training.focus, readiness.completedAt, loadMode);
   if (existing) return formatWorkout(training.date, existing, true);
 
   const emphasis = await loadNextTrainingEmphasis(env.DB, user.id, training.focus);
   if (!emphasis) {
     return `${training.date}: для группы «${training.label}» ещё не задан следующий программный акцент. План не создан, чтобы не выбирать его случайно.`;
   }
-  const loadMode=await loadModeForDate(env.DB,user.id,training.date);
-  const recoveryTrigger=loadMode==="normal"?await recoveryAssessmentDue(env.DB,user.id,training.date):null;
-  if(recoveryTrigger){
-    const question=await startRecovery(env.DB,user.id);
-    const reason=recoveryTrigger==="performance_decline"?"зафиксировано устойчивое снижение результатов на двух последовательных сопоставимых тренировках":"завершено минимум четыре тяжёлые недели";
-    return`Перед следующей тренировкой нужна оценка восстановления: ${reason}. После чекина снова нажми «🏋️ Сегодня».\n\n${question}`;
-  }
-
   const [candidates, restrictions, recentSummary, coachingContext,strengthContext,progression] = await Promise.all([
     loadExerciseCandidates(env.DB, user.id, training.focus),
     loadActiveRestrictions(env.DB, user.id),
@@ -203,7 +210,7 @@ async function workoutReply(env: Env, telegramUserId: string): Promise<string> {
   const rare = safe.allowed.filter((exercise) => exercise.availability === "rare").map((exercise) => exercise.name);
   const preferred = safe.allowed.filter((exercise) => (exercise.priority ?? 0) > 0).map((exercise) => exercise.name);
   const deprioritized = safe.allowed.filter((exercise) => (exercise.priority ?? 0) < 0).map((exercise) => exercise.name);
-  if (testing.length > 1) return `${training.date}: одновременно отмечено несколько тестируемых упражнений. Оставь одно через «🔄 Возврат», чтобы тест был контролируемым.`;
+  if (testing.length > 1) return `${training.date}: одновременно отмечено несколько тестируемых упражнений. Оставь одно через «🧪 Возврат упражнения», чтобы тест был контролируемым.`;
   const usageBlock = await aiUsageBlock(env, user.id);
   if (usageBlock) return usageBlock;
   try {
@@ -226,12 +233,14 @@ async function workoutReply(env: Env, telegramUserId: string): Promise<string> {
         `Контекст цели и восстановления ресурсов: ${coachingContext}. Не компенсируй питание чрезмерным тренировочным объёмом.`,
         `Фактическая силовая динамика по совместимым типам веса: ${strengthContext}. Используй её как сигнал, но не повышай нагрузку без целевого RIR и стабильной техники.`,
         `Детерминированный паспорт прогрессии обязателен: ${progression.context}. Не предлагай повышение веса вопреки этому решению.`,
+        `Автоматический режим восстановления: ${loadMode}${recovery.reasons.length ? `; причины: ${recovery.reasons.join(", ")}` : ""}. Эти ограничения обязательны.`,
         "Добавки перечислены только как фактический контекст. Не назначай, не отменяй и не меняй их дозировку; не делай медицинских выводов.",
         `Актуальный предтренировочный чекин: ${compactReadiness(readiness)}.`,
       ],
     });
     const progressionGuarded = applyProgressionGuard(generated.workout, progression.assessments);
-    const workout = illnessState.phase ? applyPostIllnessGuard(progressionGuarded, illnessState.phase) : progressionGuarded;
+    const recoveryGuarded = applyRecoveryLoadGuard(progressionGuarded, recovery.decision);
+    const workout = illnessState.phase ? applyPostIllnessGuard(recoveryGuarded, illnessState.phase) : recoveryGuarded;
     if (testing.length && !workout.exercises.some((exercise) => exercise.name === testing[0].name)) {
       throw new Error("Gemini пропустил обязательное тестируемое упражнение");
     }
@@ -380,7 +389,6 @@ async function freeTextReply(update: TelegramUpdate, env: Env, telegramUserId: s
   if (illnessReply !== null) return illnessReply;
   const measurementReply = await answerMeasurementConversation(env.DB, user.id, text, today);
   if (measurementReply !== null) return measurementReply;
-  const recoveryReply=await answerRecovery(env.DB,user.id,text,today);if(recoveryReply!==null)return recoveryReply;
   const injuryReply=await answerInjuryConversation(env.DB,user.id,text,today);if(injuryReply!==null)return injuryReply;
   const reintroductionReply=await answerReintroductionConversation(env.DB,user.id,text,today);if(reintroductionReply!==null)return reintroductionReply;
   const catalogReply=await answerExerciseCatalogConversation(env.DB,user.id,text);if(catalogReply!==null)return catalogReply;
@@ -620,7 +628,9 @@ async function handleUpdate(update: TelegramUpdate, env: Env): Promise<Response>
   } else if(text==="/strength"){
     const user=await ensureUser(env.DB,String(message.from.id),env.APP_TIMEZONE||"Europe/Samara");const today=toIsoDate(localDateAt(new Date(),env.APP_TIMEZONE||"Europe/Samara"));reply=await strengthProgressSummary(env.DB,user.id,today);
   } else if(text==="/recovery"){
-    const user=await ensureUser(env.DB,String(message.from.id),env.APP_TIMEZONE||"Europe/Samara");await cancelIllnessConversation(env.DB,user.id);reply=await startRecovery(env.DB,user.id);
+    const user=await ensureUser(env.DB,String(message.from.id),env.APP_TIMEZONE||"Europe/Samara");
+    await cancelRecovery(env.DB,user.id);
+    reply="Отдельный чекин восстановления больше не нужен. Бот автоматически рассчитывает режим нагрузки по предтренировочному чекину, болезни, последним тренировкам и тяжёлым неделям при запросе /today.";
   } else if(text==="/illness"){
     const user=await ensureUser(env.DB,String(message.from.id),env.APP_TIMEZONE||"Europe/Samara");
     await cancelRecovery(env.DB,user.id);await cancelInjuryConversation(env.DB,user.id);await cancelReintroductionConversation(env.DB,user.id);await cancelExerciseCatalogConversation(env.DB,user.id);await cancelExerciseAddConversation(env.DB,user.id);await cancelScheduleConversation(env.DB,user.id);await cancelReminderConversation(env.DB,user.id);await cancelMeasurementConversation(env.DB,user.id);

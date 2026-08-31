@@ -39,7 +39,7 @@ test("a cached plan created before today's checkin is not reusable", async () =>
   sqlite.prepare(`INSERT INTO workout_plans(user_id,planned_for,focus,status,generated_json,created_at)
     VALUES(1,'2026-08-31','chest','sent',?,'2026-08-31 07:00:00')`).run(cachedWorkout);
 
-  const plan = await loadExistingGeneratedPlan(db, 1, "2026-08-31", "chest", "2026-08-31 08:00:00");
+  const plan = await loadExistingGeneratedPlan(db, 1, "2026-08-31", "chest", "2026-08-31 08:00:00", "normal");
 
   assert.equal(plan, null);
   sqlite.close();
@@ -51,9 +51,21 @@ test("a cached plan created after today's checkin remains reusable", async () =>
   sqlite.prepare(`INSERT INTO workout_plans(user_id,planned_for,focus,status,generated_json,created_at)
     VALUES(1,'2026-08-31','chest','sent',?,'2026-08-31 09:00:00')`).run(cachedWorkout);
 
-  const plan = await loadExistingGeneratedPlan(db, 1, "2026-08-31", "chest", "2026-08-31 08:00:00");
+  const plan = await loadExistingGeneratedPlan(db, 1, "2026-08-31", "chest", "2026-08-31 08:00:00", "normal");
 
   assert.equal(plan?.title, "Старый план");
+  sqlite.close();
+});
+
+test("a cached normal plan is not reusable for a reduced day", async () => {
+  const { db, sqlite } = testDatabase();
+  sqlite.prepare("INSERT INTO users(telegram_user_id)VALUES('owner')").run();
+  sqlite.prepare(`INSERT INTO workout_plans(user_id,planned_for,focus,load_mode,status,generated_json,created_at)
+    VALUES(1,'2026-08-31','chest','normal','sent',?,'2026-08-31 09:00:00')`).run(cachedWorkout);
+
+  const plan = await loadExistingGeneratedPlan(db, 1, "2026-08-31", "chest", "2026-08-31 08:00:00", "reduced");
+
+  assert.equal(plan, null);
   sqlite.close();
 });
 

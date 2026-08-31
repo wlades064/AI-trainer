@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { assessDeload, decideProgression, nextEmphasis, programmingRules, pullUpVariant } from "../src/domain/programming.ts";
+import { decideProgression, nextEmphasis, programmingRules, pullUpVariant } from "../src/domain/programming.ts";
 
 test("training emphasis advances only from the last completed emphasis", () => {
   assert.equal(nextEmphasis("chest", "upper_chest", "upper_chest"), "lower_chest");
@@ -45,55 +45,6 @@ test("programming rules explicitly prohibit random selection", () => {
   assert.match(rules, /Не усредняй и не выбирай случайно/);
   assert.match(rules, /узким параллельным хватом/);
   assert.match(rules, /фактически выполненной/);
-});
-
-const recovered = {
-  completedHardWeeksSinceRecovery: 3,
-  consecutivePerformanceDeclines: 0,
-  fatigue: 2,
-  sleepQuality: 4,
-  motivation: 4,
-  sorenessHours: 24,
-  worseningJointPain: false,
-  newSwelling: false,
-  jointInstability: false,
-  recoveryBreakDays: 0,
-  feelsRecoveredAfterBreak: false,
-};
-
-test("six completed hard weeks trigger a planned deload", () => {
-  assert.deepEqual(assessDeload({ ...recovered, completedHardWeeksSinceRecovery: 6 }), {
-    decision: "deload",
-    trigger: "planned",
-    reasons: ["завершено шесть тяжёлых тренировочных недель без разгрузки"],
-  });
-});
-
-test("multiple fatigue signals trigger an earlier reactive deload", () => {
-  const result = assessDeload({ ...recovered, fatigue: 4, sleepQuality: 2 });
-  assert.equal(result.decision, "deload");
-  assert.equal(result.trigger, "reactive");
-});
-
-test("one fatigue signal starts monitoring instead of forcing a deload", () => {
-  assert.equal(assessDeload({ ...recovered, sorenessHours: 72 }).decision, "monitor");
-});
-
-test("swelling or instability is a safety stop, not a deload", () => {
-  const result = assessDeload({ ...recovered, newSwelling: true });
-  assert.equal(result.decision, "stop_and_review");
-  assert.equal(result.trigger, "safety");
-});
-
-test("a real recovery break prevents an automatic redundant deload", () => {
-  const result = assessDeload({
-    ...recovered,
-    completedHardWeeksSinceRecovery: 6,
-    recoveryBreakDays: 7,
-    feelsRecoveredAfterBreak: true,
-  });
-  assert.equal(result.decision, "normal");
-  assert.equal(result.trigger, "recovery_already_taken");
 });
 
 test("deload prompt removes failure and substantially reduces volume", () => {

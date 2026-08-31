@@ -127,7 +127,27 @@ test("cached workout cannot bypass a missing completed checkin", async () => {
   const reply = await sendText(db, 504, "/today");
 
   assert.match(reply, /чекин 1\/5/i);
+  assert.doesNotMatch(reply, /восстановлени[ея] 1\/6/i);
   assert.doesNotMatch(reply, /Сохранённая тренировка/);
   assert.equal(sqlite.prepare("SELECT COUNT(*) AS count FROM readiness_conversations WHERE status='pending'").get()!.count, 1);
+  sqlite.close();
+});
+
+test("today calculates reduced recovery internally without starting a recovery questionnaire", async () => {
+  const { db, sqlite } = testDatabase();
+  const today = seedCachedWorkout(sqlite);
+  sqlite.prepare(`INSERT INTO readiness_checkins(
+    user_id,local_date,sleep_minutes,sleep_quality,energy,pain,has_new_swelling,
+    has_instability,feels_unwell,source,decision,reasons_json,completed_at
+  )VALUES(1,?,360,2,2,0,0,0,0,'telegram','allowed','[]',CURRENT_TIMESTAMP)`).run(today);
+
+  const reply = await sendText(db, 505, "/today");
+
+  assert.doesNotMatch(reply, /восстановлени[ея] 1\/6/i);
+  assert.equal(sqlite.prepare("SELECT COUNT(*) AS count FROM recovery_conversations").get()!.count, 0);
+  const assessment = sqlite.prepare(
+    "SELECT recommendation,trigger_kind FROM deload_assessments WHERE user_id=1 AND assessed_on=?",
+  ).get(today) as { recommendation: string; trigger_kind: string };
+  assert.deepEqual({ ...assessment }, { recommendation: "monitor", trigger_kind: "reactive" });
   sqlite.close();
 });

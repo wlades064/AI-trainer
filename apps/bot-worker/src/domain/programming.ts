@@ -1,4 +1,5 @@
 export type TrainingFocus = "chest" | "back" | "legs";
+export type TrainingLoadMode = "normal" | "reduced" | "deload";
 export type TrainingEmphasis =
   | "upper_chest"
   | "lower_chest"
@@ -43,78 +44,6 @@ export interface ProgressionObservation {
 
 export type ProgressionDecision = "increase_load" | "increase_reps" | "hold" | "reduce_or_replace";
 
-export interface DeloadAssessmentInput {
-  completedHardWeeksSinceRecovery: number;
-  consecutivePerformanceDeclines: number;
-  fatigue: number;
-  sleepQuality: number;
-  motivation: number;
-  sorenessHours: number;
-  worseningJointPain: boolean;
-  newSwelling: boolean;
-  jointInstability: boolean;
-  recoveryBreakDays: number;
-  feelsRecoveredAfterBreak: boolean;
-}
-
-export type DeloadDecision = "normal" | "monitor" | "deload" | "stop_and_review";
-
-export interface DeloadAssessment {
-  decision: DeloadDecision;
-  trigger: "none" | "planned" | "reactive" | "safety" | "recovery_already_taken";
-  reasons: string[];
-}
-
-function validScale(value: number): boolean {
-  return Number.isInteger(value) && value >= 1 && value <= 5;
-}
-
-export function assessDeload(input: DeloadAssessmentInput): DeloadAssessment {
-  if (!Number.isInteger(input.completedHardWeeksSinceRecovery) || input.completedHardWeeksSinceRecovery < 0
-    || !Number.isInteger(input.consecutivePerformanceDeclines) || input.consecutivePerformanceDeclines < 0
-    || !Number.isFinite(input.sorenessHours) || input.sorenessHours < 0
-    || !Number.isFinite(input.recoveryBreakDays) || input.recoveryBreakDays < 0
-    || !validScale(input.fatigue) || !validScale(input.sleepQuality) || !validScale(input.motivation)) {
-    throw new Error("Некорректные данные оценки разгрузки");
-  }
-  if (input.newSwelling || input.jointInstability) {
-    return {
-      decision: "stop_and_review",
-      trigger: "safety",
-      reasons: [input.newSwelling ? "новый отёк" : "нестабильность сустава"],
-    };
-  }
-  if (input.recoveryBreakDays >= 5 && input.feelsRecoveredAfterBreak) {
-    return {
-      decision: "normal",
-      trigger: "recovery_already_taken",
-      reasons: ["уже был восстановительный перерыв не менее пяти дней и готовность нормализовалась"],
-    };
-  }
-  const fatigueSignals: string[] = [];
-  if (input.consecutivePerformanceDeclines >= 2) fatigueSignals.push("результаты снизились минимум на двух последовательных тренировках");
-  if (input.fatigue >= 4) fatigueSignals.push("высокая субъективная усталость");
-  if (input.sleepQuality <= 2) fatigueSignals.push("ухудшение сна");
-  if (input.motivation <= 2) fatigueSignals.push("заметное снижение желания тренироваться");
-  if (input.sorenessHours >= 72) fatigueSignals.push("мышечная болезненность сохраняется не менее 72 часов");
-  if (input.worseningJointPain) fatigueSignals.push("усиливается суставная боль");
-
-  if (fatigueSignals.length >= 2 || (input.completedHardWeeksSinceRecovery >= 4 && fatigueSignals.length >= 1)) {
-    return { decision: "deload", trigger: "reactive", reasons: fatigueSignals };
-  }
-  if (input.completedHardWeeksSinceRecovery >= 6) {
-    return { decision: "deload", trigger: "planned", reasons: ["завершено шесть тяжёлых тренировочных недель без разгрузки"] };
-  }
-  if (input.completedHardWeeksSinceRecovery >= 4 || fatigueSignals.length === 1) {
-    return {
-      decision: "monitor",
-      trigger: "none",
-      reasons: fatigueSignals.length ? fatigueSignals : ["достигнуто окно плановой проверки после четырёх недель"],
-    };
-  }
-  return { decision: "normal", trigger: "none", reasons: [] };
-}
-
 export const DELOAD_PRESCRIPTION = {
   durationDays: 7,
   normalVolumeFraction: [0.45, 0.6] as const,
@@ -134,6 +63,14 @@ export function deloadRules(): string[] {
   ];
 }
 
+export function reducedLoadRules(): string[] {
+  return [
+    "Это облегчённая тренировка из-за неполного восстановления: сохрани технику и не компенсируй состояние интенсивностью.",
+    "Оставь не более пяти упражнений и не более трёх рабочих подходов в каждом.",
+    "Не повышай рабочий вес, оставляй 2–3 повторения в запасе и исключи отказ, дроп-сеты и форсированные повторения.",
+  ];
+}
+
 export function decideProgression(observation: ProgressionObservation): ProgressionDecision {
   if (observation.completedReps.length === 0) return "hold";
   if (observation.jointPain || !observation.techniqueStable) return "reduce_or_replace";
@@ -145,7 +82,7 @@ export function decideProgression(observation: ProgressionObservation): Progress
   return "hold";
 }
 
-export function programmingRules(focus: TrainingFocus, emphasis: TrainingEmphasis, loadMode: "normal" | "deload" = "normal"): string[] {
+export function programmingRules(focus: TrainingFocus, emphasis: TrainingEmphasis, loadMode: TrainingLoadMode = "normal"): string[] {
   const rules = [
     `Текущий акцент: ${emphasis}.`,
     "Акцент меняется только после фактически выполненной тренировки этой группы; пропуск календарного дня цикл не переключает.",
@@ -156,6 +93,7 @@ export function programmingRules(focus: TrainingFocus, emphasis: TrainingEmphasi
     "Сформируй внутреннее обоснование выбора упражнений и прогрессии, но не включай его в сообщение пользователю.",
   ];
   if (focus === "back") rules.push(`Подтягивания указывай только с конкретным хватом; для этого акцента: ${pullUpVariant(emphasis)}.`);
+  if (loadMode === "reduced") rules.push(...reducedLoadRules());
   if (loadMode === "deload") rules.push(...deloadRules());
   return rules;
 }

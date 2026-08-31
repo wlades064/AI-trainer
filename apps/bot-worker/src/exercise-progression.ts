@@ -1,4 +1,4 @@
-import { decideProgression, type ProgressionDecision } from "./domain/programming.ts";
+import { decideProgression, type ProgressionDecision, type TrainingLoadMode } from "./domain/programming.ts";
 import type { GeneratedWorkout } from "./gemini.ts";
 
 export interface ExerciseProgressionInput {
@@ -13,7 +13,7 @@ export interface ExerciseProgressionInput {
   lastSetRir: number | null;
   techniqueStable: boolean | null;
   painReported: boolean;
-  loadMode: "normal" | "deload";
+  loadMode: TrainingLoadMode;
 }
 
 export interface ExerciseProgressionAssessment extends ExerciseProgressionInput {
@@ -59,7 +59,13 @@ export function parseTargetRepRange(value: string | null): { minimum: number; ma
 
 export function assessExerciseProgression(input: ExerciseProgressionInput): ExerciseProgressionAssessment {
   const base = { ...input };
-  if (input.loadMode === "deload") return { ...base, decision: "hold", reason: "разгрузочная тренировка не используется для повышения нагрузки" };
+  if (input.loadMode !== "normal") return {
+    ...base,
+    decision: "hold",
+    reason: input.loadMode === "deload"
+      ? "разгрузочная тренировка не используется для повышения нагрузки"
+      : "облегчённая тренировка из-за восстановления не используется для повышения нагрузки",
+  };
   if (input.painReported) return { ...base, decision: "reduce_or_replace", reason: "после тренировки указана боль или неприятные ощущения" };
   if (input.techniqueStable === false) return { ...base, decision: "reduce_or_replace", reason: "техника в рабочих подходах была нестабильной" };
   if (input.techniqueStable === null) return { ...base, decision: "hold", reason: "стабильность техники не зафиксирована" };

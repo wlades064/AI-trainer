@@ -1,7 +1,7 @@
 import { DEFAULT_SCHEDULE, type ScheduleRule } from "./domain/schedule.ts";
 import type { ActiveRestriction, ExerciseCandidate } from "./domain/safety.ts";
 import type { GeneratedWorkout } from "./gemini.ts";
-import type { TrainingEmphasis, TrainingFocus } from "./domain/programming.ts";
+import type { TrainingEmphasis, TrainingFocus, TrainingLoadMode } from "./domain/programming.ts";
 
 export interface D1Result<T> { results?: T[] }
 export interface D1PreparedStatement {
@@ -221,14 +221,15 @@ export async function loadExistingGeneratedPlan(
   plannedFor: string,
   focus: string,
   freshSince: string,
+  loadMode: TrainingLoadMode,
 ): Promise<GeneratedWorkout | null> {
   const row = await db.prepare(
     `SELECT generated_json FROM workout_plans
      WHERE user_id = ? AND planned_for = ? AND focus = ?
-       AND created_at >= ?
+       AND created_at >= ? AND load_mode = ?
        AND status IN ('sent', 'accepted') AND generated_json IS NOT NULL
      ORDER BY created_at DESC LIMIT 1`,
-  ).bind(userId, plannedFor, focus, freshSince).first<ExistingPlanRow>();
+  ).bind(userId, plannedFor, focus, freshSince, loadMode).first<ExistingPlanRow>();
   if (!row?.generated_json) return null;
   try {
     return JSON.parse(row.generated_json) as GeneratedWorkout;
@@ -243,7 +244,7 @@ export async function saveGeneratedPlan(
   plannedFor: string,
   focus: string,
   emphasis: TrainingEmphasis,
-  loadMode: "normal" | "deload",
+  loadMode: TrainingLoadMode,
   model: string,
   workout: GeneratedWorkout,
   inputTokens: number,

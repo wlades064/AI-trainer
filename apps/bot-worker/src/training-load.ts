@@ -1,6 +1,3 @@
 function mondayKey(date:string):string{const d=new Date(`${date}T00:00:00Z`);const shift=(d.getUTCDay()+6)%7;d.setUTCDate(d.getUTCDate()-shift);return d.toISOString().slice(0,10)}
 export function completedHardWeeks(sessionDates:string[],targetDate:string):number{const current=mondayKey(targetDate);const counts=new Map<string,number>();for(const date of sessionDates){const week=mondayKey(date);if(week>=current)continue;counts.set(week,(counts.get(week)??0)+1)}return[...counts.values()].filter((count)=>count>=2).length}
 export function sundayOfWeek(date:string):string{const monday=new Date(`${mondayKey(date)}T00:00:00Z`);monday.setUTCDate(monday.getUTCDate()+6);return monday.toISOString().slice(0,10)}
-export function shouldRequestRecoveryAssessment(completedWeeks:number,hasAssessmentInLastSevenDays:boolean):boolean{return completedWeeks>=4&&!hasAssessmentInLastSevenDays}
-export type RecoveryAssessmentTrigger="training_block"|"performance_decline";
-export function recoveryTrigger(completedWeeks:number,consecutiveDeclines:number,hasAssessmentInLastSevenDays:boolean):RecoveryAssessmentTrigger|null{if(hasAssessmentInLastSevenDays)return null;if(consecutiveDeclines>=2)return"performance_decline";if(shouldRequestRecoveryAssessment(completedWeeks,false))return"training_block";return null}

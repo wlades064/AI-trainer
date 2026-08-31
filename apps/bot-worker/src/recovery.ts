@@ -1,6 +1,0 @@
-export type RecoveryStep=1|2|3|4|5|6;
-export function recoveryQuestion(step:RecoveryStep):string{return["","Восстановление 1/6. Общая усталость 1–5?","2/6. Качество сна 1–5?","3/6. Мотивация тренироваться 1–5?","4/6. Сколько часов сохраняется мышечная болезненность? Например: 24.","5/6. Суставная боль усиливается? да/нет","6/6. Есть новый отёк или нестабильность сустава? Напиши «нет» либо перечисли."][step]}
-export function parseFive(text:string):number|null{const m=text.trim().match(/^([1-5])(?:\s*\/\s*5)?$/);return m?Number(m[1]):null}
-export function parseHours(text:string):number|null{const m=text.trim().toLowerCase().match(/^(\d{1,3}(?:[.,]\d)?)\s*(?:ч|час|часа|часов)?$/);if(!m)return null;const n=Number(m[1].replace(",","."));return n>=0&&n<=336?n:null}
-export function parseYesNo(text:string):boolean|null{const n=text.trim().toLowerCase();if(/^(да|есть|усиливается)$/.test(n))return true;if(/^(нет|не было|не усиливается)$/.test(n))return false;return null}
-export function parseJointFlags(text:string):{swelling:boolean;instability:boolean}|null{const n=text.trim().toLowerCase();if(/^(нет|ничего|не было)$/.test(n))return{swelling:false,instability:false};const swelling=/от[её]к/.test(n),instability=/нестабил|подкаш|неустойчив/.test(n);return swelling||instability?{swelling,instability}:null}

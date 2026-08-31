@@ -1,11 +1,12 @@
 import type { D1Database } from "./db.ts";
+import type { TrainingLoadMode } from "./domain/programming.ts";
 import { assessExerciseProgression, compactProgressionContext, formatProgressionSummary, type ExerciseProgressionAssessment } from "./exercise-progression.ts";
 
 interface Row {
   session_id: number;
   local_date: string;
   focus: string;
-  load_mode: "normal" | "deload";
+  load_mode: TrainingLoadMode;
   last_set_rir: number | null;
   technique_stable: number | null;
   pain_json: string;
