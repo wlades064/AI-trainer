@@ -82,6 +82,7 @@ import { planTransientDialogMessages } from "./transient-dialog.ts";
 import { deliverReplyWithTransientCleanup } from "./transient-dialog-delivery.ts";
 import { cleanupTransientDialogs } from "./transient-dialog-cleanup.ts";
 import { runMeasurementMenuAction } from "./measurement-menu.ts";
+import { dispatchWorkoutRequest } from "./workout-request.ts";
 
 interface Env {
   DB: D1Database;
@@ -148,11 +149,11 @@ function formatWorkout(date: string, workout: GeneratedWorkout, reused = false):
   return text.length <= 4000 ? text : `${text.slice(0, 3950)}\n…`;
 }
 
-async function workoutReply(offset: 0 | 1, env: Env, telegramUserId: string): Promise<string> {
+async function workoutReply(env: Env, telegramUserId: string): Promise<string> {
   const timeZone = env.APP_TIMEZONE || "Europe/Samara";
   const user = await ensureUser(env.DB, telegramUserId, timeZone);
   const schedule = await loadSchedule(env.DB, user.id);
-  const local = addCalendarDays(localDateAt(new Date(), timeZone), offset);
+  const local = localDateAt(new Date(), timeZone);
   const localDate=toIsoDate(local);
   const override=await loadScheduleOverride(env.DB,user.id,localDate);
   const training = trainingForDate(local, schedule,override);
@@ -163,17 +164,15 @@ async function workoutReply(offset: 0 | 1, env: Env, telegramUserId: string): Pr
   if (illnessState.active) {
     return `${training.date}: тренировку не составляю, потому что болезнь отмечена активной с ${illnessState.active.started_on}. Когда восстановишься, открой «🤒 Болезнь» и выбери «выздоровел».`;
   }
-  const readiness = offset === 0 ? await loadReadinessForDate(env.DB, user.id, training.date) : null;
-  if (offset === 0 && !readiness) return startReadinessConversation(env.DB, user.id, training.date);
-  if (readiness) {
-    const decision = evaluateReadiness(readiness);
-    if (!decision.allowed) {
-      return `${training.date}: тренировку не составляю: ${decision.reasons.join(", ")}. При резком или необычном ухудшении состояния обратись за медицинской помощью.`;
-    }
+  const readiness = await loadReadinessForDate(env.DB, user.id, training.date);
+  if (!readiness) return startReadinessConversation(env.DB, user.id, training.date);
+  const decision = evaluateReadiness(readiness);
+  if (!decision.allowed) {
+    return `${training.date}: тренировку не составляю: ${decision.reasons.join(", ")}. При резком или необычном ухудшении состояния обратись за медицинской помощью.`;
   }
   const recoveryStop=await activeRecoveryStop(env.DB,user.id);
   if(recoveryStop)return`${training.date}: тренировку не составляю — действует блок восстановления: ${recoveryStop.join(", ")}. Пройди «🩺 Восстановление» повторно после проверки состояния; при тревожных симптомах обратись за медицинской помощью.`;
-  const existing = await loadExistingGeneratedPlan(env.DB, user.id, training.date, training.focus);
+  const existing = await loadExistingGeneratedPlan(env.DB, user.id, training.date, training.focus, readiness.completedAt);
   if (existing) return formatWorkout(training.date, existing, true);
 
   const emphasis = await loadNextTrainingEmphasis(env.DB, user.id, training.focus);
@@ -185,7 +184,7 @@ async function workoutReply(offset: 0 | 1, env: Env, telegramUserId: string): Pr
   if(recoveryTrigger){
     const question=await startRecovery(env.DB,user.id);
     const reason=recoveryTrigger==="performance_decline"?"зафиксировано устойчивое снижение результатов на двух последовательных сопоставимых тренировках":"завершено минимум четыре тяжёлые недели";
-    return`Перед следующей тренировкой нужна оценка восстановления: ${reason}. После чекина снова нажми «🏋️ Сегодня» или «📅 Завтра».\n\n${question}`;
+    return`Перед следующей тренировкой нужна оценка восстановления: ${reason}. После чекина снова нажми «🏋️ Сегодня».\n\n${question}`;
   }
 
   const [candidates, restrictions, recentSummary, coachingContext,strengthContext,progression] = await Promise.all([
@@ -228,7 +227,7 @@ async function workoutReply(offset: 0 | 1, env: Env, telegramUserId: string): Pr
         `Фактическая силовая динамика по совместимым типам веса: ${strengthContext}. Используй её как сигнал, но не повышай нагрузку без целевого RIR и стабильной техники.`,
         `Детерминированный паспорт прогрессии обязателен: ${progression.context}. Не предлагай повышение веса вопреки этому решению.`,
         "Добавки перечислены только как фактический контекст. Не назначай, не отменяй и не меняй их дозировку; не делай медицинских выводов.",
-        ...(readiness ? [`Актуальный предтренировочный чекин: ${compactReadiness(readiness)}.`] : []),
+        `Актуальный предтренировочный чекин: ${compactReadiness(readiness)}.`,
       ],
     });
     const progressionGuarded = applyProgressionGuard(generated.workout, progression.assessments);
@@ -371,7 +370,7 @@ async function freeTextReply(update: TelegramUpdate, env: Env, telegramUserId: s
   const readinessReply = await answerReadinessConversation(env.DB, user.id, text);
   if (readinessReply !== null) {
     if (readinessReply.completed && readinessReply.allowed) {
-      const workout = await workoutReply(0, env, telegramUserId);
+      const workout = await workoutReply(env, telegramUserId);
       return `${readinessReply.reply}\n\n${workout}`;
     }
     return readinessReply.reply;
@@ -529,7 +528,7 @@ async function handleUpdate(update: TelegramUpdate, env: Env): Promise<Response>
     else reply="Фото обрабатывается только с явной подписью: /nutrition для КБЖУ или /labphoto для лабораторного бланка. Без подписи фото не отправляется в Gemini.";
   } else if (text === "/start" || text === "/help" || text === "/menu") {
     showMenu = true;
-    reply = "Команды: /today — тренировка на сегодня, /tomorrow — на завтра, /illness — болезнь и возвращение к нагрузке, /program — состояние тренировочного цикла, /progression — паспорт прогрессии упражнений, /schedule — разовые переносы и отмены, /reminders — напоминания о весе и замерах, /review — итоги за 28 дней, /status — полнота и свежесть данных, /usage — расход и дневной предел Gemini, /export — персональный архив, /goal — текущая цель, /confirm — подтвердить отчёт или КБЖУ, /fatsecret — подпись к пользовательскому CSV, /nutrition — подпись к аварийному скриншоту FatSecret, /weight 87.5 — аварийная запись веса, /measure — месячные замеры, /progress — тело и питание, /strength — силовая динамика, /injuries — травмы, /reintroductions — возврат упражнений, /exercises — каталог, /cancel — отмена текущего диалога. Голосовое сообщение до 2 минут разбирается как фактический отчёт к плану за сегодня или вчера.";
+    reply = "Команды: /today — чекин и тренировка на сегодня, /illness — болезнь и возвращение к нагрузке, /program — состояние тренировочного цикла, /progression — паспорт прогрессии упражнений, /schedule — разовые переносы и отмены, /reminders — напоминания о весе и замерах, /review — итоги за 28 дней, /status — полнота и свежесть данных, /usage — расход и дневной предел Gemini, /export — персональный архив, /goal — текущая цель, /confirm — подтвердить отчёт или КБЖУ, /fatsecret — подпись к пользовательскому CSV, /nutrition — подпись к аварийному скриншоту FatSecret, /weight 87.5 — аварийная запись веса, /measure — месячные замеры, /progress — тело и питание, /strength — силовая динамика, /injuries — травмы, /reintroductions — возврат упражнений, /exercises — каталог, /cancel — отмена текущего диалога. Голосовое сообщение до 2 минут разбирается как фактический отчёт к плану за сегодня или вчера.";
   } else if (text === "/confirm") {
     const user = await ensureUser(env.DB, String(message.from.id), env.APP_TIMEZONE || "Europe/Samara");
     const workoutDraft = await loadPendingReportDraft(env.DB, user.id);
@@ -678,15 +677,13 @@ async function handleUpdate(update: TelegramUpdate, env: Env): Promise<Response>
   } else if (/^\/lab(?:@\w+)?(?:\s|$)/i.test(text)) {
     const input=parseLabCommand(text);if(!input)reply=`Неверный формат. ${LAB_HELP}`;else{const user=await ensureUser(env.DB,String(message.from.id),env.APP_TIMEZONE||"Europe/Samara");const today=toIsoDate(localDateAt(new Date(),env.APP_TIMEZONE||"Europe/Samara"));await addLabResult(env.DB,user.id,input,today);reply=`Сохранено: ${input.marker} — ${input.valueText} ${input.unit}, лабораторный референс ${input.reference}, дата ${input.date??today}. Медицинская интерпретация не выполнялась.`;}
   } else if (offset !== null) {
-    if (offset === 0) {
-      const user = await ensureUser(env.DB, String(message.from.id), env.APP_TIMEZONE || "Europe/Samara");
+    reply = await dispatchWorkoutRequest(offset, async () => {
+      const user = await ensureUser(env.DB, telegramUserId, env.APP_TIMEZONE || "Europe/Samara");
       const pendingPostWorkout = await pendingPostWorkoutQuestion(env.DB, user.id);
-      reply = pendingPostWorkout
+      return pendingPostWorkout
         ? `Сначала закончи послетренировочный чекин или отмени его командой /cancel.\n\n${pendingPostWorkout}`
-        : await workoutReply(offset, env, String(message.from.id));
-    } else {
-      reply = await workoutReply(offset, env, String(message.from.id));
-    }
+        : workoutReply(env, telegramUserId);
+    });
   } else {
     reply = await freeTextReply(update, env, String(message.from.id), text);
   }

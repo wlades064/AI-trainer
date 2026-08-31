@@ -220,13 +220,15 @@ export async function loadExistingGeneratedPlan(
   userId: number,
   plannedFor: string,
   focus: string,
+  freshSince: string,
 ): Promise<GeneratedWorkout | null> {
   const row = await db.prepare(
     `SELECT generated_json FROM workout_plans
      WHERE user_id = ? AND planned_for = ? AND focus = ?
+       AND created_at >= ?
        AND status IN ('sent', 'accepted') AND generated_json IS NOT NULL
      ORDER BY created_at DESC LIMIT 1`,
-  ).bind(userId, plannedFor, focus).first<ExistingPlanRow>();
+  ).bind(userId, plannedFor, focus, freshSince).first<ExistingPlanRow>();
   if (!row?.generated_json) return null;
   try {
     return JSON.parse(row.generated_json) as GeneratedWorkout;

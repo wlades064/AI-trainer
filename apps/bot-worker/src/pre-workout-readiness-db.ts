@@ -11,6 +11,7 @@ import {
 } from "./pre-workout-readiness.ts";
 
 export interface ReadinessRecord {
+  completedAt: string;
   sleepMinutes: number;
   sleepQuality: number;
   energy: number;
@@ -81,7 +82,7 @@ export async function pendingReadinessQuestion(db: D1Database, userId: number): 
 export async function loadReadinessForDate(db: D1Database, userId: number, localDate: string): Promise<ReadinessRecord | null> {
   const row = await db.prepare(
     `SELECT sleep_minutes, sleep_quality, energy, pain, pain_details,
-            has_new_swelling, has_instability, feels_unwell
+            has_new_swelling, has_instability, feels_unwell, completed_at
      FROM readiness_checkins
      WHERE user_id = ? AND local_date = ? AND source = 'telegram'
      ORDER BY created_at DESC LIMIT 1`,
@@ -94,9 +95,11 @@ export async function loadReadinessForDate(db: D1Database, userId: number, local
     has_new_swelling: number;
     has_instability: number;
     feels_unwell: number;
+    completed_at: string | null;
   }>();
-  if (!row || row.sleep_minutes === null || row.sleep_quality === null || row.energy === null || row.pain === null) return null;
+  if (!row || row.sleep_minutes === null || row.sleep_quality === null || row.energy === null || row.pain === null || !row.completed_at) return null;
   return {
+    completedAt: row.completed_at,
     sleepMinutes: row.sleep_minutes,
     sleepQuality: row.sleep_quality,
     energy: row.energy,
