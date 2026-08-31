@@ -645,7 +645,9 @@ export default {
       env.DB,
       new Date(controller.scheduledTime),
       env.APP_TIMEZONE || "Europe/Samara",
-      (telegramUserId, text) => sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, Number(telegramUserId), text, MAIN_MENU_MARKUP),
+      async (telegramUserId, text) => {
+        await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, Number(telegramUserId), text, MAIN_MENU_MARKUP);
+      },
     );
     await env.DB.prepare("INSERT INTO system_events (event_type, scheduled_for, payload_json) VALUES (?, ?, ?)")
       .bind("cron_fired", new Date(controller.scheduledTime).toISOString(), JSON.stringify({ cron: controller.cron, remindersDelivered: delivered }))

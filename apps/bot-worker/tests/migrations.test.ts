@@ -48,3 +48,21 @@ test("measurement migration expires only unfinished legacy dialogs", () => {
   );
   database.close();
 });
+
+test("transient Telegram messages are unique per chat and message", () => {
+  const database = new DatabaseSync(":memory:");
+  for (const filename of migrationFiles) {
+    database.exec(readFileSync(resolve(migrationsDirectory, filename), "utf8"));
+  }
+  database.prepare("INSERT INTO users(telegram_user_id)VALUES('owner')").run();
+  database.prepare(`INSERT INTO transient_dialog_messages(
+    user_id,chat_id,message_id,dialog_key,direction
+  )VALUES(1,123,10,'measurement:1','incoming')`).run();
+  assert.throws(
+    () => database.prepare(`INSERT INTO transient_dialog_messages(
+      user_id,chat_id,message_id,dialog_key,direction
+    )VALUES(1,123,10,'measurement:1','incoming')`).run(),
+    /UNIQUE constraint failed/,
+  );
+  database.close();
+});

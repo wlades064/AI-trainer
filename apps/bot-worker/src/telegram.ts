@@ -19,13 +19,44 @@ export interface TelegramPhotoSize {
 
 export interface TelegramUpdate { update_id: number; message?: TelegramMessage }
 
-export async function sendTelegramMessage(token: string, chatId: number, text: string, replyMarkup?: unknown): Promise<void> {
-  const response = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+export async function sendTelegramMessage(
+  token: string,
+  chatId: number,
+  text: string,
+  replyMarkup?: unknown,
+  fetchImpl: typeof fetch = fetch,
+): Promise<number> {
+  const response = await fetchImpl(`https://api.telegram.org/bot${token}/sendMessage`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ chat_id: chatId, text, ...(replyMarkup ? { reply_markup: replyMarkup } : {}) }),
   });
   if (!response.ok) throw new Error(`Telegram sendMessage failed: ${response.status}`);
+  const payload = await response.json<{ ok: boolean; result?: { message_id?: number } }>();
+  const messageId = payload.result?.message_id;
+  if (!payload.ok || !Number.isSafeInteger(messageId) || Number(messageId) <= 0) {
+    throw new Error("Telegram sendMessage returned an invalid response");
+  }
+  return Number(messageId);
+}
+
+export async function deleteTelegramMessages(
+  token: string,
+  chatId: number,
+  messageIds: number[],
+  fetchImpl: typeof fetch = fetch,
+): Promise<void> {
+  const uniqueIds = [...new Set(messageIds.filter((id) => Number.isSafeInteger(id) && id > 0))];
+  for (let offset = 0; offset < uniqueIds.length; offset += 100) {
+    const response = await fetchImpl(`https://api.telegram.org/bot${token}/deleteMessages`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ chat_id: chatId, message_ids: uniqueIds.slice(offset, offset + 100) }),
+    });
+    if (!response.ok) throw new Error(`Telegram deleteMessages failed: ${response.status}`);
+    const payload = await response.json<{ ok: boolean; result?: boolean }>();
+    if (!payload.ok || payload.result !== true) throw new Error("Telegram deleteMessages failed");
+  }
 }
 
 export async function sendTelegramDocument(token: string, chatId: number, filename: string, content: string, caption: string, fetchImpl: typeof fetch = fetch): Promise<void> {
