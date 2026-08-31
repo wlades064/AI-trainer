@@ -16,7 +16,7 @@ import {
 import { filterSafeExercises } from "./domain/safety.ts";
 import { programmingRules } from "./domain/programming.ts";
 import { generateWorkout, type GeneratedWorkout } from "./gemini.ts";
-import { downloadTelegramPhoto, downloadTelegramTextDocument, downloadTelegramVoice, selectEfficientPhoto, sendTelegramDocument, sendTelegramMessage, type TelegramUpdate } from "./telegram.ts";
+import { deleteTelegramMessages, downloadTelegramPhoto, downloadTelegramTextDocument, downloadTelegramVoice, selectEfficientPhoto, sendTelegramDocument, sendTelegramMessage, type TelegramUpdate } from "./telegram.ts";
 import {
   cancelPendingReportDraft,
   confirmPendingReportDraft,
@@ -77,6 +77,9 @@ import { compactExerciseProgression, exerciseProgressionSummary } from "./exerci
 import { applyProgressionGuard } from "./exercise-progression.ts";
 import { applyPostIllnessGuard, postIllnessRules } from "./illness.ts";
 import { answerIllnessConversation, cancelIllnessConversation, loadIllnessTrainingState, startIllnessConversation } from "./illness-db.ts";
+import { findTelegramUserId, loadActiveTransientDialogs, loadOrphanedTransientDialogKeys } from "./transient-dialog-db.ts";
+import { planTransientDialogMessages } from "./transient-dialog.ts";
+import { deliverReplyWithTransientCleanup } from "./transient-dialog-delivery.ts";
 
 interface Env {
   DB: D1Database;
@@ -440,6 +443,9 @@ async function handleUpdate(update: TelegramUpdate, env: Env): Promise<Response>
   if (!message?.from || (!message.text && !message.caption && !message.photo?.length && !message.document && !message.voice)) return new Response("ok");
   if (String(message.from.id) !== env.ALLOWED_TELEGRAM_USER_ID) return new Response("forbidden", { status: 403 });
 
+  const telegramUserId = String(message.from.id);
+  const userIdBefore = await findTelegramUserId(env.DB, telegramUserId);
+  const transientDialogsBefore = userIdBefore ? await loadActiveTransientDialogs(env.DB, userIdBefore) : [];
   const originalText = (message.text ?? message.caption ?? "").trim();
   const text = message.photo?.length||message.document||message.voice ? originalText : commandFromMenuText(originalText);
   const offset = requestedDayOffset(text);
@@ -615,7 +621,50 @@ async function handleUpdate(update: TelegramUpdate, env: Env): Promise<Response>
   } else {
     reply = await freeTextReply(update, env, String(message.from.id), text);
   }
-  await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, message.chat.id, reply, showMenu ? MAIN_MENU_MARKUP : undefined);
+  const userId = userIdBefore ?? await findTelegramUserId(env.DB, telegramUserId);
+  if (!userId) {
+    await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, message.chat.id, reply, showMenu ? MAIN_MENU_MARKUP : undefined);
+    return new Response("ok");
+  }
+  const transientDialogsAfter = await loadActiveTransientDialogs(env.DB, userId);
+  const isDataUpload = Boolean(
+    (message.document && /^\/fatsecret(?:@\w+)?$/i.test(text))
+    || (message.photo?.length && /^\/(?:nutrition|labphoto)(?:@\w+)?$/i.test(text)),
+  );
+  const transientPlan = planTransientDialogMessages(
+    transientDialogsBefore,
+    transientDialogsAfter,
+    text,
+    update.update_id,
+    isDataUpload,
+  );
+  const retryableCleanupKeys = await loadOrphanedTransientDialogKeys(
+    env.DB,
+    userId,
+    transientDialogsAfter.map((dialog) => dialog.dialogKey),
+  );
+  transientPlan.cleanupDialogKeys = [...new Set([...transientPlan.cleanupDialogKeys, ...retryableCleanupKeys])];
+  await deliverReplyWithTransientCleanup({
+    db: env.DB,
+    userId,
+    chatId: message.chat.id,
+    incomingMessageId: message.message_id,
+    reply,
+    replyMarkup: showMenu ? MAIN_MENU_MARKUP : undefined,
+    plan: transientPlan,
+    sendMessage: (outgoingText, replyMarkup) => sendTelegramMessage(
+      env.TELEGRAM_BOT_TOKEN,
+      message.chat.id,
+      outgoingText,
+      replyMarkup,
+    ),
+    deleteMessages: (chatId, messageIds) => deleteTelegramMessages(env.TELEGRAM_BOT_TOKEN, chatId, messageIds),
+    onCleanupFailure: async (error) => {
+      const description = error instanceof Error ? error.message : "unknown";
+      await env.DB.prepare("INSERT INTO system_events(event_type,payload_json)VALUES('telegram_dialog_cleanup_failed',?)")
+        .bind(JSON.stringify({ error: description.slice(0, 300) })).run();
+    },
+  });
   return new Response("ok");
 }
 

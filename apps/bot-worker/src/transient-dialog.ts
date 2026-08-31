@@ -72,11 +72,16 @@ function permanentWorkoutCommand(text: string): boolean {
   return /^\/(?:today|tomorrow|confirm)(?:@\w+)?$/i.test(text);
 }
 
+function transientFlowCommand(text: string): boolean {
+  return /^\/(?:cancel|confirm|checkin|ready|measure|recovery|illness|injuries|reintroductions|exercises|schedule|reminders|today|tomorrow)(?:@\w+)?$/i.test(text);
+}
+
 export function planTransientDialogMessages(
   before: ActiveTransientDialog[],
   after: ActiveTransientDialog[],
   text: string,
   updateId: number,
+  dataUpload = false,
 ): TransientDialogMessagePlan {
   const afterKeys = new Set(after.map((dialog) => dialog.dialogKey));
   const beforeKeys = new Set(before.map((dialog) => dialog.dialogKey));
@@ -85,9 +90,13 @@ export function planTransientDialogMessages(
     .map((dialog) => dialog.dialogKey);
   const newlyStarted = after.filter((dialog) => !beforeKeys.has(dialog.dialogKey));
 
-  if (directDataWrite(text) && newlyStarted.length === 0 && cleanupDialogKeys.length === 0) {
+  if ((directDataWrite(text) || dataUpload) && newlyStarted.length === 0 && cleanupDialogKeys.length === 0) {
     const dialogKey = `direct:${updateId}`;
     return { incomingDialogKey: dialogKey, outgoingDialogKey: dialogKey, cleanupDialogKeys: [dialogKey] };
+  }
+
+  if (/^\//.test(text) && newlyStarted.length === 0 && cleanupDialogKeys.length === 0 && !transientFlowCommand(text)) {
+    return { cleanupDialogKeys };
   }
 
   const beforeOrder = /^\/confirm(?:@\w+)?$/i.test(text)
@@ -99,7 +108,8 @@ export function planTransientDialogMessages(
   if (!current) return { cleanupDialogKeys };
 
   const completed = cleanupDialogKeys.includes(current.dialogKey);
-  const keepIncoming = newlyStarted.length > 0 && before.length === 0 && permanentWorkoutCommand(text);
+  const confirmingDataDraft = /^\/confirm(?:@\w+)?$/i.test(text) && firstByOrder(before, CONFIRM_ORDER) !== undefined;
+  const keepIncoming = permanentWorkoutCommand(text) && !confirmingDataDraft;
   const keepOutgoing = current.flowType === "readiness" && completed && !/^\/cancel(?:@\w+)?$/i.test(text);
 
   return {

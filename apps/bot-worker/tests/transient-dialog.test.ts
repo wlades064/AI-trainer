@@ -55,6 +55,10 @@ test("today and workout confirmation stay while their checkin prompts are transi
   const confirm = planTransientDialogMessages([], [postWorkout], "/confirm", 105);
   assert.equal(confirm.incomingDialogKey, undefined);
   assert.equal(confirm.outgoingDialogKey, postWorkout.dialogKey);
+
+  const repeatedToday = planTransientDialogMessages([readiness], [readiness], "/today", 110);
+  assert.equal(repeatedToday.incomingDialogKey, undefined);
+  assert.equal(repeatedToday.outgoingDialogKey, readiness.dialogKey);
 });
 
 test("direct data writes are cleaned without affecting permanent read-only commands", () => {
@@ -68,6 +72,14 @@ test("direct data writes are cleaned without affecting permanent read-only comma
   }
 });
 
+test("a repeated or failed data upload without a draft is still cleaned", () => {
+  const upload = planTransientDialogMessages([], [], "/nutrition", 109, true);
+
+  assert.equal(upload.incomingDialogKey, "direct:109");
+  assert.equal(upload.outgoingDialogKey, "direct:109");
+  assert.deepEqual(upload.cleanupDialogKeys, ["direct:109"]);
+});
+
 test("switching flows cleans the old dialog and tracks the new one", () => {
   const illness = dialog("illness", 11);
   const measurement = dialog("measurement", 12);
@@ -77,4 +89,12 @@ test("switching flows cleans the old dialog and tracks the new one", () => {
   assert.equal(plan.incomingDialogKey, measurement.dialogKey);
   assert.equal(plan.outgoingDialogKey, measurement.dialogKey);
   assert.deepEqual(plan.cleanupDialogKeys, [illness.dialogKey]);
+});
+
+test("read-only permanent commands do not become part of an unrelated active checkin", () => {
+  const checkin = dialog("post_workout_checkin", 13);
+
+  for (const command of ["/strength", "/review", "/progress", "/export", "/usage"]) {
+    assert.deepEqual(planTransientDialogMessages([checkin], [checkin], command, 111), { cleanupDialogKeys: [] });
+  }
 });
