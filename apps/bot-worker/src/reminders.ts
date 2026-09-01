@@ -1,4 +1,26 @@
+import { localDateAt, toIsoDate, weekday } from "./domain/schedule.ts";
+
 export type ReminderInput={kind:"weight";hour:number}|{kind:"measurements";day:number;hour:number}|{kind:"disable";type:"weight"|"measurements"};
+export const AUTOMATIC_MEASUREMENTS_START_DATE = "2026-10-01";
+export const AUTOMATIC_MEASUREMENTS_HOUR = 10;
+
+export function isAutomaticMeasurementReminderDue(instant: Date, timeZone: string): boolean {
+  const date = localDateAt(instant, timeZone);
+  const localDate = toIsoDate(date);
+  const parts = new Intl.DateTimeFormat("en-GB", {
+    timeZone,
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+  }).formatToParts(instant);
+  const value = (type: "hour" | "minute") => Number(parts.find((part) => part.type === type)?.value);
+  return localDate >= AUTOMATIC_MEASUREMENTS_START_DATE
+    && date.day <= 7
+    && weekday(date) === 6
+    && value("hour") === AUTOMATIC_MEASUREMENTS_HOUR
+    && value("minute") === 0;
+}
+
 function hour(text:string):number|null{const match=text.match(/^(\d{1,2}):00$/);if(!match)return null;const value=Number(match[1]);return value>=0&&value<=23?value:null}
 export function parseReminderInput(text:string):ReminderInput|null{const value=text.trim().toLocaleLowerCase("ru-RU");if(value==="выключить вес")return{kind:"disable",type:"weight"};if(value==="выключить замеры")return{kind:"disable",type:"measurements"};const weight=value.match(/^вес\s+(\d{1,2}:00)$/);if(weight){const parsed=hour(weight[1]);return parsed===null?null:{kind:"weight",hour:parsed}}const measurements=value.match(/^замеры\s+(\d{1,2})\s+(\d{1,2}:00)$/);if(!measurements)return null;const day=Number(measurements[1]),parsed=hour(measurements[2]);return day>=1&&day<=28&&parsed!==null?{kind:"measurements",day,hour:parsed}:null}
 export const REMINDER_HELP="Настройка: «вес 09:00» — каждый понедельник; «замеры 1 09:00» — выбранный день месяца от 1 до 28. Отключение: «выключить вес» или «выключить замеры». Минуты — только 00.";

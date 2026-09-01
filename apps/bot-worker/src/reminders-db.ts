@@ -1,6 +1,6 @@
 import type { D1Database } from "./db.ts";
-import { localDateAt, toIsoDate, weekday } from "./domain/schedule.ts";
-import { parseReminderInput, REMINDER_HELP } from "./reminders.ts";
+import { localDateAt, toIsoDate } from "./domain/schedule.ts";
+import { isAutomaticMeasurementReminderDue, parseReminderInput, REMINDER_HELP } from "./reminders.ts";
 import { MEASUREMENT_KINDS } from "./body-tracking.ts";
 
 type ReminderType = "weight" | "measurements";
@@ -12,7 +12,7 @@ interface SettingRow {
   day_of_month: number | null;
   local_hour: number;
 }
-interface DueRow extends SettingRow { user_id: number; telegram_user_id: string }
+interface ReminderUserRow { user_id: number; telegram_user_id: string }
 
 async function pending(db: D1Database, userId: number): Promise<ConversationRow | null> {
   return db.prepare(`SELECT id FROM reminder_conversations
@@ -72,22 +72,13 @@ export async function answerReminderConversation(db: D1Database, userId: number,
   return `${input.kind === "disable" ? "Напоминание выключено." : "Напоминание сохранено."}\n\n${await settingsText(db, userId)}`;
 }
 
-function localHour(instant: Date, timeZone: string): number {
-  const parts = new Intl.DateTimeFormat("en-GB", { timeZone, hour: "2-digit", hourCycle: "h23" }).formatToParts(instant);
-  return Number(parts.find((part) => part.type === "hour")?.value);
-}
-
-async function alreadyRecorded(db: D1Database, row: DueRow, localDate: string): Promise<boolean> {
-  if (row.reminder_type === "weight") {
-    return (await db.prepare("SELECT id FROM body_measurements WHERE user_id=? AND measured_at=? AND kind='weight' LIMIT 1")
-      .bind(row.user_id, localDate).first<{ id: number }>()) !== null;
-  }
+async function monthlyMeasurementsAlreadyRecorded(db: D1Database, userId: number, localDate: string): Promise<boolean> {
   const month = localDate.slice(0, 7);
   const kinds = MEASUREMENT_KINDS.map(([kind]) => kind);
   const placeholders = kinds.map(() => "?").join(",");
   const count = await db.prepare(`SELECT COUNT(DISTINCT kind) AS count FROM body_measurements
     WHERE user_id=? AND substr(measured_at,1,7)=? AND kind IN (${placeholders})`)
-    .bind(row.user_id, month, ...kinds).first<{ count: number }>();
+    .bind(userId, month, ...kinds).first<{ count: number }>();
   return Number(count?.count ?? 0) >= kinds.length;
 }
 
@@ -97,23 +88,18 @@ export async function runDueReminders(
   timeZone: string,
   deliver: (telegramUserId: string, text: string) => Promise<void>,
 ): Promise<number> {
+  if (!isAutomaticMeasurementReminderDue(instant, timeZone)) return 0;
   const date = localDateAt(instant, timeZone);
   const localDate = toIsoDate(date);
-  const hour = localHour(instant, timeZone);
-  const result = await db.prepare(`SELECT s.user_id,u.telegram_user_id,s.reminder_type,s.enabled,s.weekday,s.day_of_month,s.local_hour
-    FROM reminder_settings s JOIN users u ON u.id=s.user_id
-    WHERE s.enabled=1 AND s.local_hour=? AND s.local_minute=0`).bind(hour).all<DueRow>();
+  const result = await db.prepare("SELECT id AS user_id,telegram_user_id FROM users").all<ReminderUserRow>();
   let delivered = 0;
   for (const row of result.results ?? []) {
-    const due = row.reminder_type === "weight" ? row.weekday === weekday(date) : row.day_of_month === date.day;
-    if (!due || await alreadyRecorded(db, row, localDate)) continue;
+    if (await monthlyMeasurementsAlreadyRecorded(db, row.user_id, localDate)) continue;
     const claim = await db.prepare(`INSERT INTO reminder_deliveries(user_id,reminder_type,local_date,status)
-      VALUES(?,?,?,'pending') ON CONFLICT(user_id,reminder_type,local_date) DO NOTHING RETURNING id`)
-      .bind(row.user_id, row.reminder_type, localDate).first<{ id: number }>();
+      VALUES(?,'measurements',?,'pending') ON CONFLICT(user_id,reminder_type,local_date) DO NOTHING RETURNING id`)
+      .bind(row.user_id, localDate).first<{ id: number }>();
     if (!claim) continue;
-    const text = row.reminder_type === "weight"
-      ? "Напоминание о весе: обнови вес в FatSecret. Повторно вводить его в Telegram не нужно; команда /weight — только резерв, если импорт недоступен."
-      : "Пора сделать ежемесячные замеры в одинаковых условиях. Нажми «📏 Замеры» и внеси фактические значения.";
+    const text = "Пора сделать ежемесячные замеры в одинаковых условиях. Нажми «📏 Замеры» и внеси фактические значения.";
     try {
       await deliver(row.telegram_user_id, text);
       await db.prepare("UPDATE reminder_deliveries SET status='delivered',delivered_at=CURRENT_TIMESTAMP WHERE id=?").bind(claim.id).run();
