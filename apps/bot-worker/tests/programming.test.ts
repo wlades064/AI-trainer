@@ -37,7 +37,7 @@ test("pain or unstable technique blocks progression", () => {
   assert.equal(decideProgression({
     completedReps: [12, 12, 12], targetMinReps: 10, targetMaxReps: 12,
     targetRirReached: true, techniqueStable: true, jointPain: true,
-  }), "reduce_or_replace");
+  }), "reduce_load");
 });
 
 test("programming rules explicitly prohibit random selection", () => {

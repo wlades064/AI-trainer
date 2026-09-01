@@ -42,7 +42,7 @@ export interface ProgressionObservation {
   jointPain: boolean;
 }
 
-export type ProgressionDecision = "increase_load" | "increase_reps" | "hold" | "reduce_or_replace";
+export type ProgressionDecision = "increase_load" | "increase_reps" | "hold" | "reduce_load" | "replace_exercise";
 
 export const DELOAD_PRESCRIPTION = {
   durationDays: 7,
@@ -73,7 +73,7 @@ export function reducedLoadRules(): string[] {
 
 export function decideProgression(observation: ProgressionObservation): ProgressionDecision {
   if (observation.completedReps.length === 0) return "hold";
-  if (observation.jointPain || !observation.techniqueStable) return "reduce_or_replace";
+  if (observation.jointPain || !observation.techniqueStable) return "reduce_load";
   if (observation.completedReps.every((reps) => reps >= observation.targetMaxReps) && observation.targetRirReached) {
     return "increase_load";
   }

@@ -10,6 +10,9 @@ export interface ExerciseProgressionInput {
   actualReps: number[];
   latestWeightKg: number | null;
   loadBasis: string | null;
+  actualSets?: Array<{ reps: number; weightKg: number | null; loadBasis: string }>;
+  reportStatus?: "completed" | "partial" | "skipped" | "substituted" | null;
+  replacementName?: string | null;
   lastSetRir: number | null;
   techniqueStable: boolean | null;
   painReported: boolean;
@@ -25,7 +28,8 @@ const DECISION_LABELS: Record<ProgressionDecision, string> = {
   increase_load: "разрешён минимальный шаг веса",
   increase_reps: "сначала добавить повторения",
   hold: "удерживать нагрузку",
-  reduce_or_replace: "снизить нагрузку или заменить упражнение",
+  reduce_load: "снизить нагрузку",
+  replace_exercise: "заменить упражнение",
 };
 
 const BASIS_LABELS: Record<string, string> = {
@@ -58,7 +62,19 @@ export function parseTargetRepRange(value: string | null): { minimum: number; ma
 }
 
 export function assessExerciseProgression(input: ExerciseProgressionInput): ExerciseProgressionAssessment {
-  const base = { ...input };
+  const actualSets = input.actualSets ?? input.actualReps.map((reps) => ({
+    reps,
+    weightKg: input.latestWeightKg,
+    loadBasis: input.loadBasis ?? "unknown",
+  }));
+  const actualReps = actualSets.map((set) => set.reps);
+  const base = { ...input, actualSets, actualReps };
+  if (input.reportStatus === "substituted" && input.replacementName) {
+    return { ...base, decision: "replace_exercise", reason: `в отчёте упражнение заменено на «${input.replacementName}»` };
+  }
+  if (input.reportStatus === "skipped") return { ...base, decision: "hold", reason: "упражнение пропущено" };
+  if (input.painReported) return { ...base, decision: "reduce_load", reason: "после тренировки указана боль или неприятные ощущения" };
+  if (input.techniqueStable === false) return { ...base, decision: "reduce_load", reason: "техника в рабочих подходах была нестабильной" };
   if (input.loadMode !== "normal") return {
     ...base,
     decision: "hold",
@@ -66,15 +82,26 @@ export function assessExerciseProgression(input: ExerciseProgressionInput): Exer
       ? "разгрузочная тренировка не используется для повышения нагрузки"
       : "облегчённая тренировка из-за восстановления не используется для повышения нагрузки",
   };
-  if (input.painReported) return { ...base, decision: "reduce_or_replace", reason: "после тренировки указана боль или неприятные ощущения" };
-  if (input.techniqueStable === false) return { ...base, decision: "reduce_or_replace", reason: "техника в рабочих подходах была нестабильной" };
   if (input.techniqueStable === null) return { ...base, decision: "hold", reason: "стабильность техники не зафиксирована" };
   if (input.lastSetRir === null) return { ...base, decision: "hold", reason: "RIR последних рабочих подходов не зафиксирован" };
   const range = parseTargetRepRange(input.targetReps);
   if (!range || !input.targetSets) return { ...base, decision: "hold", reason: "нет сопоставимого целевого диапазона плана" };
-  if (input.actualReps.length < input.targetSets) return { ...base, decision: "hold", reason: `выполнено ${input.actualReps.length} из ${input.targetSets} рабочих подходов` };
+  if (actualReps.length < input.targetSets) return { ...base, decision: "hold", reason: `выполнено ${actualReps.length} из ${input.targetSets} рабочих подходов` };
+  const comparedSets = actualSets.slice(0, input.targetSets);
+  const loadBases = new Set(comparedSets.map((set) => set.loadBasis));
+  if (loadBases.size !== 1 || loadBases.has("unknown")) {
+    return { ...base, decision: "hold", reason: "рабочие подходы имеют несопоставимый или неизвестный тип учёта веса" };
+  }
+  const loadBasis = comparedSets[0].loadBasis;
+  if (loadBasis !== "bodyweight") {
+    if (comparedSets.some((set) => set.weightKg === null)) {
+      return { ...base, decision: "hold", reason: "вес указан не для всех целевых рабочих подходов" };
+    }
+    const weights = new Set(comparedSets.map((set) => set.weightKg));
+    if (weights.size !== 1) return { ...base, decision: "hold", reason: "целевые рабочие подходы выполнены с разным весом" };
+  }
   const decision = decideProgression({
-    completedReps: input.actualReps.slice(0, input.targetSets),
+    completedReps: actualReps.slice(0, input.targetSets),
     targetMinReps: range.minimum,
     targetMaxReps: range.maximum,
     targetRirReached: input.lastSetRir >= 1,
@@ -83,7 +110,7 @@ export function assessExerciseProgression(input: ExerciseProgressionInput): Exer
   });
   const reason = decision === "increase_load" ? `все рабочие подходы достигли ${range.maximum} повторений при RIR ${input.lastSetRir}`
     : decision === "increase_reps" ? `выполнен диапазон от ${range.minimum}, но верхняя граница достигнута не во всех подходах`
-      : input.actualReps.every((reps) => reps >= range.maximum) && input.lastSetRir === 0 ? "верхняя граница достигнута, но RIR 0 запрещает повышение веса"
+      : actualReps.every((reps) => reps >= range.maximum) && input.lastSetRir === 0 ? "верхняя граница достигнута, но RIR 0 запрещает повышение веса"
         : `целевой объём ${input.targetSets} × ${input.targetReps} ещё не закрыт`;
   return { ...base, decision, reason };
 }
@@ -98,7 +125,8 @@ export function progressionWeightGuidance(value: ExerciseProgressionAssessment):
   const base = loadText(value);
   if (value.decision === "increase_load") return `Разрешён только минимальный доступный шаг нагрузки относительно «${base}» при сохранении техники и RIR не ниже 1.`;
   if (value.decision === "increase_reps") return `Сохрани нагрузку «${base}» и сначала добавляй повторения в целевом диапазоне; вес не повышать.`;
-  if (value.decision === "reduce_or_replace") return `Не повышать нагрузку относительно «${base}»; снизить её до стабильной безболезненной техники либо заменить упражнение.`;
+  if (value.decision === "reduce_load") return `Снизить нагрузку относительно «${base}» до стабильной безболезненной техники; повышение веса запрещено.`;
+  if (value.decision === "replace_exercise") return `Заменить упражнение на «${value.replacementName ?? "безопасный разрешённый аналог"}»; исходное упражнение в следующий план не возвращать.`;
   return `Удерживай нагрузку не выше «${base}»; повышение веса пока не разрешено.`;
 }
 
