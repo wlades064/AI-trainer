@@ -373,27 +373,49 @@ export async function parseWorkoutReport(
   input: Parameters<typeof buildWorkoutReportPrompt>[0],
   fetchImpl: typeof fetch = fetch,
 ): Promise<{ report: WorkoutReportDraft; inputTokens: number; outputTokens: number }> {
-  const response = await fetchImpl(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`, {
-    method: "POST",
-    headers: { "content-type": "application/json", "x-goog-api-key": apiKey },
-    signal: AbortSignal.timeout(25_000),
-    body: JSON.stringify({
-      contents: [{ parts: [{ text: buildWorkoutReportPrompt(input) }] }],
-      generationConfig: { responseMimeType: "application/json", responseJsonSchema: REPORT_SCHEMA },
-    }),
-  });
-  if (!response.ok) throw new Error(`Gemini report parser error: ${response.status}`);
-  const generated = await response.json<GenerateContentResponse>();
-  const report = validateWorkoutReport(
-    JSON.parse(responseText(generated)),
+  const request = async (prompt: string): Promise<GenerateContentResponse> => {
+    const response = await fetchImpl(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-goog-api-key": apiKey },
+      signal: AbortSignal.timeout(25_000),
+      body: JSON.stringify({
+        contents: [{ parts: [{ text: prompt }] }],
+        generationConfig: { responseMimeType: "application/json", responseJsonSchema: REPORT_SCHEMA },
+      }),
+    });
+    if (!response.ok) throw new Error(`Gemini report parser error: ${response.status}`);
+    return response.json<GenerateContentResponse>();
+  };
+  const validate = (text: string): WorkoutReportDraft => validateWorkoutReport(
+    JSON.parse(text),
     input.date,
     input.plan.exercises.map(({ name }) => name),
     new Set(input.catalogExerciseNames),
   );
+  const originalPrompt = buildWorkoutReportPrompt(input);
+  const first = await request(originalPrompt);
+  let firstText = "";
+  let report: WorkoutReportDraft;
+  let repaired: GenerateContentResponse | null = null;
+  try {
+    firstText = responseText(first);
+    report = validate(firstText);
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : "неизвестная ошибка структуры";
+    const repairPrompt = [
+      originalPrompt,
+      "Первый ответ не прошёл проверку контракта. Исправь его и верни полный JSON отчёта заново.",
+      `Причина отказа валидатора: ${JSON.stringify(reason)}.`,
+      `Предыдущий ответ: ${JSON.stringify(firstText || "пустой ответ")}.`,
+      "Не меняй подтверждённые владельцем факты. Неизвестные значения оставь в missingInformation.",
+    ].join("\n");
+    repaired = await request(repairPrompt);
+    report = validate(responseText(repaired));
+  }
   return {
     report,
-    inputTokens: generated.usageMetadata?.promptTokenCount ?? 0,
-    outputTokens: generated.usageMetadata?.candidatesTokenCount ?? 0,
+    inputTokens: (first.usageMetadata?.promptTokenCount ?? 0) + (repaired?.usageMetadata?.promptTokenCount ?? 0),
+    outputTokens: (first.usageMetadata?.candidatesTokenCount ?? 0) + (repaired?.usageMetadata?.candidatesTokenCount ?? 0),
   };
 }
 

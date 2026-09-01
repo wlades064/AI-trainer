@@ -80,6 +80,35 @@ test("report parser uses a structured stateless request", async () => {
   assert.deepEqual([result.inputTokens, result.outputTokens], [100, 50]);
 });
 
+test("report parser gives Gemini one repair pass after semantic validation fails", async () => {
+  const invalidReport = structuredClone(validReport);
+  invalidReport.exercises[0].name = "Подтягивания другим названием";
+  const requestBodies: Array<Record<string, any>> = [];
+  const responses = [
+    { report: invalidReport, inputTokens: 100, outputTokens: 40 },
+    { report: validReport, inputTokens: 140, outputTokens: 50 },
+  ];
+  const fakeFetch: typeof fetch = async (_url, init) => {
+    requestBodies.push(JSON.parse(String(init?.body)));
+    const next = responses.shift();
+    assert.ok(next);
+    return Response.json({
+      usageMetadata: { promptTokenCount: next.inputTokens, candidatesTokenCount: next.outputTokens },
+      candidates: [{ content: { parts: [{ text: JSON.stringify(next.report) }] } }],
+    });
+  };
+
+  const result = await parseWorkoutReport("secret", "gemini-test", {
+    date: "2026-08-26", plan, reportText: "свободный отчёт", catalogExerciseNames: ["Подтягивания", "Пуловер"],
+  }, fakeFetch);
+
+  assert.equal(requestBodies.length, 2);
+  assert.match(requestBodies[1].contents[0].parts[0].text, /Недопустимое или повторное упражнение/);
+  assert.match(requestBodies[1].contents[0].parts[0].text, /исправь/i);
+  assert.equal(result.report.exercises[0].name, "Подтягивания");
+  assert.deepEqual([result.inputTokens, result.outputTokens], [240, 90]);
+});
+
 test("voice report uses one inline structured Gemini request", async () => {
   let requestBody: any;
   const fakeFetch: typeof fetch = async (_url, init) => {
