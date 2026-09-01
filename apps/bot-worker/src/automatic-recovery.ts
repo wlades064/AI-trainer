@@ -27,12 +27,6 @@ export interface AutomaticRecoveryInput {
   recentCheckins: RecentRecoveryCheckin[];
 }
 
-export interface AutomaticRecoveryAssessment {
-  decision: RecoveryLoadDecision;
-  trigger: "none" | "reactive" | "planned" | "safety";
-  reasons: string[];
-}
-
 export interface RecoverySafetyAssessment {
   allowed: boolean;
   reasons: string[];
@@ -70,55 +64,6 @@ export function compactRecoveryContext(input: AutomaticRecoveryInput): string {
     `снижений результата подряд: ${input.consecutivePerformanceDeclines}`,
     `последние послетренировочные чекины: ${checkins}`,
   ].join("; ");
-}
-
-function poorCheckin(checkin: RecentRecoveryCheckin): boolean {
-  return (checkin.effort !== null && checkin.effort >= 9)
-    || (checkin.wellbeing !== null && checkin.wellbeing <= 2)
-    || checkin.painReported
-    || checkin.techniqueStable === false;
-}
-
-export function assessAutomaticRecovery(input: AutomaticRecoveryInput): AutomaticRecoveryAssessment {
-  const safetyReasons = [
-    input.illnessActive ? "активная болезнь" : null,
-    input.readiness.hasNewSwelling ? "новый отёк" : null,
-    input.readiness.hasInstability ? "нестабильность сустава" : null,
-    input.readiness.feelsUnwell ? "плохое общее самочувствие" : null,
-    input.readiness.pain >= 7 ? "сильная боль" : null,
-  ].filter((reason): reason is string => reason !== null);
-  if (safetyReasons.length) return { decision: "stop", trigger: "safety", reasons: safetyReasons };
-
-  if (input.scheduledDeloadActive) {
-    return { decision: "deload", trigger: "planned", reasons: ["активна запланированная разгрузочная неделя"] };
-  }
-
-  const acuteReasons = [
-    input.readiness.sleepQuality <= 2 ? "низкое качество сна" : null,
-    input.readiness.energy <= 2 ? "низкая энергия" : null,
-    input.readiness.pain >= 4 ? "заметная текущая боль" : null,
-  ].filter((reason): reason is string => reason !== null);
-  const poorRecentCount = input.recentCheckins.slice(0, 2).filter(poorCheckin).length;
-  const accumulatedReasons = [
-    input.consecutivePerformanceDeclines >= 2 ? "результаты снизились на двух последовательных тренировках" : null,
-    poorRecentCount >= 2 ? "два последних послетренировочных чекина указывают на плохое восстановление" : null,
-  ].filter((reason): reason is string => reason !== null);
-
-  if (input.completedHardWeeks >= 6) {
-    return { decision: "deload", trigger: "planned", reasons: ["завершено шесть тяжёлых недель без разгрузки"] };
-  }
-  if (input.completedHardWeeks >= 4 && (acuteReasons.length >= 2 || accumulatedReasons.length >= 1)) {
-    return { decision: "deload", trigger: "reactive", reasons: [...acuteReasons, ...accumulatedReasons] };
-  }
-  const reducedReasons = [
-    ...acuteReasons,
-    ...accumulatedReasons,
-    ...(poorRecentCount === 1 ? ["последний послетренировочный чекин указывает на неполное восстановление"] : []),
-    ...(input.completedHardWeeks >= 4 ? ["завершено не менее четырёх тяжёлых недель"] : []),
-    ...(input.postIllnessPhase ? [`возврат после болезни, этап ${input.postIllnessPhase}`] : []),
-  ];
-  if (reducedReasons.length) return { decision: "reduced", trigger: "reactive", reasons: reducedReasons };
-  return { decision: "normal", trigger: "none", reasons: [] };
 }
 
 export function applyRecoveryLoadGuard(

@@ -42,11 +42,18 @@ function seedCachedWorkout(sqlite: DatabaseSync): string {
   return today;
 }
 
-async function sendText(db: D1Database, updateId: number, text: string): Promise<string> {
+async function sendText(db: D1Database, updateId: number, text: string, geminiResponse?: unknown): Promise<string> {
   const originalFetch = globalThis.fetch;
   let sentText = "";
   globalThis.fetch = async (input, init) => {
     const url = String(input);
+    if (url.includes("generativelanguage.googleapis.com")) {
+      if (!geminiResponse) throw new Error(`Unexpected external request: ${url}`);
+      return Response.json({
+        usageMetadata: { promptTokenCount: 120, candidatesTokenCount: 80 },
+        candidates: [{ content: { parts: [{ text: JSON.stringify(geminiResponse) }] } }],
+      });
+    }
     if (!url.includes("api.telegram.org") || !url.endsWith("/sendMessage")) {
       throw new Error(`Unexpected external request: ${url}`);
     }
@@ -133,21 +140,41 @@ test("cached workout cannot bypass a missing completed checkin", async () => {
   sqlite.close();
 });
 
-test("today calculates reduced recovery internally without starting a recovery questionnaire", async () => {
+test("today lets Gemini choose recovery mode without starting a recovery questionnaire", async () => {
   const { db, sqlite } = testDatabase();
   const today = seedCachedWorkout(sqlite);
   sqlite.prepare(`INSERT INTO readiness_checkins(
     user_id,local_date,sleep_minutes,sleep_quality,energy,pain,has_new_swelling,
     has_instability,feels_unwell,source,decision,reasons_json,completed_at
   )VALUES(1,?,360,2,2,0,0,0,0,'telegram','allowed','[]',CURRENT_TIMESTAMP)`).run(today);
+  sqlite.prepare("INSERT INTO exercises(name,muscle_group)VALUES('Жим гантелей лёжа','chest')").run();
+  sqlite.prepare("INSERT INTO user_exercise_settings(user_id,exercise_id,workout_role)VALUES(1,1,'main')").run();
+  sqlite.prepare("INSERT INTO training_program_state(user_id,focus,next_emphasis)VALUES(1,'chest','upper_chest')").run();
 
-  const reply = await sendText(db, 505, "/today");
+  const reply = await sendText(db, 505, "/today", {
+    loadMode: "normal",
+    recoveryRationale: ["Gemini оценил совокупность данных и оставил обычный режим"],
+    title: "Тренировка по решению Gemini",
+    warmup: [],
+    exercises: [{
+      name: "Жим гантелей лёжа",
+      sets: 3,
+      reps: "10-12",
+      weightGuidance: "Подобрать по технике",
+      restSeconds: 90,
+      notes: "Оставить запас повторений",
+    }],
+    cooldown: [],
+    safetyNotes: ["Прекратить при боли"],
+    programmingRationale: ["Режим выбран по текущему восстановлению"],
+  });
 
+  assert.match(reply, /Тренировка по решению Gemini/);
   assert.doesNotMatch(reply, /восстановлени[ея] 1\/6/i);
   assert.equal(sqlite.prepare("SELECT COUNT(*) AS count FROM recovery_conversations").get()!.count, 0);
   const assessment = sqlite.prepare(
     "SELECT recommendation,trigger_kind FROM deload_assessments WHERE user_id=1 AND assessed_on=?",
   ).get(today) as { recommendation: string; trigger_kind: string };
-  assert.deepEqual({ ...assessment }, { recommendation: "monitor", trigger_kind: "reactive" });
+  assert.deepEqual({ ...assessment }, { recommendation: "normal", trigger_kind: "none" });
   sqlite.close();
 });

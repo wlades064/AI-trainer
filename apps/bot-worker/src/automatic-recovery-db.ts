@@ -3,10 +3,10 @@ import type { ReadinessRecord } from "./pre-workout-readiness-db.ts";
 import { performanceDeclineCount } from "./strength-analytics-db.ts";
 import { sundayOfWeek } from "./training-load.ts";
 import {
-  assessAutomaticRecovery,
-  type AutomaticRecoveryAssessment,
+  type AutomaticRecoveryInput,
   type RecentRecoveryCheckin,
 } from "./automatic-recovery.ts";
+import type { GeminiRecoveryDecision } from "./gemini.ts";
 
 interface TrainingLoadStateRow {
   completed_hard_weeks: number;
@@ -43,10 +43,9 @@ const databaseRecommendation = {
   normal: "normal",
   reduced: "monitor",
   deload: "deload",
-  stop: "stop_and_review",
 } as const;
 
-export async function assessAndRecordAutomaticRecovery(
+export async function loadAutomaticRecoveryInput(
   db: D1Database,
   userId: number,
   localDate: string,
@@ -54,7 +53,7 @@ export async function assessAndRecordAutomaticRecovery(
   illnessActive: boolean,
   postIllnessPhase: 1 | 2 | null,
   scheduledDeloadActive = false,
-): Promise<AutomaticRecoveryAssessment> {
+): Promise<AutomaticRecoveryInput> {
   const state = await db.prepare(
     "SELECT completed_hard_weeks FROM training_load_state WHERE user_id = ?",
   ).bind(userId).first<TrainingLoadStateRow>();
@@ -69,7 +68,7 @@ export async function assessAndRecordAutomaticRecovery(
   const declines = await performanceDeclineCount(db, userId, localDate);
   const completedHardWeeks = state?.completed_hard_weeks ?? 0;
   const recentCheckins = (checkins.results ?? []).map(toCheckin);
-  const assessment = assessAutomaticRecovery({
+  return {
     readiness,
     illnessActive,
     postIllnessPhase,
@@ -77,7 +76,26 @@ export async function assessAndRecordAutomaticRecovery(
     completedHardWeeks,
     consecutivePerformanceDeclines: declines,
     recentCheckins,
-  });
+  };
+}
+
+function recoveryTrigger(
+  input: AutomaticRecoveryInput,
+  decision: GeminiRecoveryDecision["decision"],
+): "none" | "reactive" | "planned" {
+  if (decision === "normal") return "none";
+  if (decision === "deload" && (input.scheduledDeloadActive || input.completedHardWeeks >= 6)) return "planned";
+  return "reactive";
+}
+
+export async function recordAutomaticRecoveryAssessment(
+  db: D1Database,
+  userId: number,
+  localDate: string,
+  input: AutomaticRecoveryInput,
+  recovery: GeminiRecoveryDecision,
+): Promise<void> {
+  const trigger = recoveryTrigger(input, recovery.decision);
   await db.prepare(
     `INSERT INTO deload_assessments(
        user_id, assessed_on, completed_hard_weeks, consecutive_performance_declines,
@@ -99,23 +117,22 @@ export async function assessAndRecordAutomaticRecovery(
   ).bind(
     userId,
     localDate,
-    completedHardWeeks,
-    declines,
+    input.completedHardWeeks,
+    input.consecutivePerformanceDeclines,
     null,
-    readiness.sleepQuality,
+    input.readiness.sleepQuality,
     null,
     0,
-    Number(readiness.hasNewSwelling),
-    Number(readiness.hasInstability),
-    databaseRecommendation[assessment.decision],
-    assessment.trigger,
-    JSON.stringify(assessment.reasons),
+    Number(input.readiness.hasNewSwelling),
+    Number(input.readiness.hasInstability),
+    databaseRecommendation[recovery.decision],
+    trigger,
+    JSON.stringify(recovery.reasons),
   ).run();
 
-  if (assessment.decision === "deload") {
+  if (recovery.decision === "deload") {
     await db.prepare(
       "UPDATE training_load_state SET deload_until = ?, updated_at = CURRENT_TIMESTAMP WHERE user_id = ?",
     ).bind(sundayOfWeek(localDate), userId).run();
   }
-  return assessment;
 }

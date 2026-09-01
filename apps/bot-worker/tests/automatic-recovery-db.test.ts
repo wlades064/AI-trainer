@@ -4,7 +4,7 @@ import { readdirSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { DatabaseSync, type SQLInputValue } from "node:sqlite";
 import type { D1Database, D1PreparedStatement, D1Result } from "../src/db.ts";
-import { assessAndRecordAutomaticRecovery } from "../src/automatic-recovery-db.ts";
+import { loadAutomaticRecoveryInput, recordAutomaticRecoveryAssessment } from "../src/automatic-recovery-db.ts";
 import type { ReadinessRecord } from "../src/pre-workout-readiness-db.ts";
 
 function testDatabase(): { db: D1Database; sqlite: DatabaseSync } {
@@ -36,7 +36,7 @@ const readiness = (overrides: Partial<ReadinessRecord> = {}): ReadinessRecord =>
   ...overrides,
 });
 
-test("automatic recovery uses recent post-workout checkins and persists a deload", async () => {
+test("recovery input exposes recent checkins and persists the decision made by Gemini", async () => {
   const { db, sqlite } = testDatabase();
   sqlite.prepare("INSERT INTO users(telegram_user_id)VALUES('owner')").run();
   sqlite.prepare(`INSERT INTO training_load_state(user_id,current_block_started_on,completed_hard_weeks,baseline_reason)
@@ -48,9 +48,16 @@ test("automatic recovery uses recent post-workout checkins and persists a deload
     )VALUES(1,?,'back',?,CURRENT_TIMESTAMP,9,0,'{"anyPain":true}',2,0,CURRENT_TIMESTAMP)`).run(date, ref);
   }
 
-  const result = await assessAndRecordAutomaticRecovery(db, 1, "2026-08-31", readiness(), false, null);
+  const input = await loadAutomaticRecoveryInput(db, 1, "2026-08-31", readiness(), false, null);
+  assert.equal(input.completedHardWeeks, 4);
+  assert.equal(input.recentCheckins.length, 2);
+  assert.equal(input.recentCheckins[0].painReported, true);
 
-  assert.equal(result.decision, "deload");
+  await recordAutomaticRecoveryAssessment(db, 1, "2026-08-31", input, {
+    decision: "deload",
+    reasons: ["Gemini учёл накопленную усталость и два тяжёлых чекина"],
+  });
+
   const assessment = sqlite.prepare(`SELECT recommendation,trigger_kind,completed_hard_weeks
     FROM deload_assessments WHERE user_id=1 AND assessed_on='2026-08-31'`).get() as {
       recommendation: string; trigger_kind: string; completed_hard_weeks: number;
@@ -60,13 +67,13 @@ test("automatic recovery uses recent post-workout checkins and persists a deload
   sqlite.close();
 });
 
-test("automatic recovery records a reduced day from current readiness without starting a conversation", async () => {
+test("low sleep remains factual input until the Gemini decision is recorded", async () => {
   const { db, sqlite } = testDatabase();
   sqlite.prepare("INSERT INTO users(telegram_user_id)VALUES('owner')").run();
   sqlite.prepare(`INSERT INTO training_load_state(user_id,current_block_started_on,completed_hard_weeks,baseline_reason)
     VALUES(1,'2026-08-01',0,'test')`).run();
 
-  const result = await assessAndRecordAutomaticRecovery(
+  const input = await loadAutomaticRecoveryInput(
     db,
     1,
     "2026-08-31",
@@ -75,7 +82,15 @@ test("automatic recovery records a reduced day from current readiness without st
     null,
   );
 
-  assert.equal(result.decision, "reduced");
+  assert.equal(input.readiness.sleepQuality, 2);
+  assert.equal(input.readiness.energy, 2);
+  assert.equal(sqlite.prepare("SELECT COUNT(*) AS count FROM deload_assessments").get()!.count, 0);
+
+  await recordAutomaticRecoveryAssessment(db, 1, "2026-08-31", input, {
+    decision: "reduced",
+    reasons: ["Gemini выбрал облегчённый режим после оценки общей картины"],
+  });
+
   assert.equal((sqlite.prepare("SELECT recommendation FROM deload_assessments WHERE user_id=1").get() as { recommendation: string }).recommendation, "monitor");
   assert.equal(sqlite.prepare("SELECT COUNT(*) AS count FROM recovery_conversations").get()!.count, 0);
   sqlite.close();

@@ -57,8 +57,8 @@ import { formatLabImageDraft, parseLabScreenshot } from "./lab-image.ts";
 import { cancelLabImageDraft, confirmLabImageDraft, findLabImage, pendingLabImageDraft, saveLabImageDraft } from "./lab-image-db.ts";
 import { loadModeForDate } from "./training-load-db.ts";
 import { cancelRecovery } from "./recovery-db.ts";
-import { assessAndRecordAutomaticRecovery } from "./automatic-recovery-db.ts";
-import { applyRecoveryLoadGuard } from "./automatic-recovery.ts";
+import { loadAutomaticRecoveryInput, recordAutomaticRecoveryAssessment } from "./automatic-recovery-db.ts";
+import { applyRecoveryLoadGuard, assessRecoverySafety, compactRecoveryContext } from "./automatic-recovery.ts";
 import { compactStrengthContext, strengthProgressSummary } from "./strength-analytics-db.ts";
 import { answerInjuryConversation, cancelInjuryConversation, startInjuryConversation } from "./injuries-db.ts";
 import { answerReintroductionConversation, cancelReintroductionConversation, startReintroductionConversation } from "./reintroduction-db.ts";
@@ -173,8 +173,10 @@ async function workoutReply(env: Env, telegramUserId: string): Promise<string> {
   if (!decision.allowed) {
     return `${training.date}: тренировку не составляю: ${decision.reasons.join(", ")}. При резком или необычном ухудшении состояния обратись за медицинской помощью.`;
   }
+  const existing = await loadExistingGeneratedPlan(env.DB, user.id, training.date, training.focus, readiness.completedAt);
+  if (existing) return formatWorkout(training.date, existing, true);
   const cycleLoadMode = await loadModeForDate(env.DB, user.id, training.date);
-  const recovery = await assessAndRecordAutomaticRecovery(
+  const recoveryInput = await loadAutomaticRecoveryInput(
     env.DB,
     user.id,
     training.date,
@@ -183,12 +185,10 @@ async function workoutReply(env: Env, telegramUserId: string): Promise<string> {
     illnessState.phase,
     cycleLoadMode === "deload",
   );
-  if (recovery.decision === "stop") {
-    return `${training.date}: тренировку не составляю — автоматическая проверка восстановления выявила: ${recovery.reasons.join(", ")}. При тревожных симптомах обратись за медицинской помощью.`;
+  const recoverySafety = assessRecoverySafety(recoveryInput);
+  if (!recoverySafety.allowed) {
+    return `${training.date}: тренировку не составляю — проверка безопасности выявила: ${recoverySafety.reasons.join(", ")}. При тревожных симптомах обратись за медицинской помощью.`;
   }
-  const loadMode = recovery.decision;
-  const existing = await loadExistingGeneratedPlan(env.DB, user.id, training.date, training.focus, readiness.completedAt, loadMode);
-  if (existing) return formatWorkout(training.date, existing, true);
 
   const emphasis = await loadNextTrainingEmphasis(env.DB, user.id, training.focus);
   if (!emphasis) {
@@ -224,7 +224,7 @@ async function workoutReply(env: Env, telegramUserId: string): Promise<string> {
       recentSummary,
       selectionGuidance: [
         ...GUIDANCE[training.focus],
-        ...programmingRules(training.focus, emphasis,loadMode),
+        ...programmingRules(training.focus, emphasis),
         ...(illnessState.phase ? postIllnessRules(illnessState.phase) : []),
         ...(testing.length ? [`Обязательно включи единственное тестируемое упражнение «${testing[0].name}» с минимальной консервативной нагрузкой. Политика: ${testing[0].reintroductionLoadPolicy ?? "без повышения веса"}. Прекратить при боли, отёке или нестабильности.`] : []),
         ...(preferred.length ? [`Предпочтительные упражнения владельца: ${preferred.join(", ")}. При прочих равных сохраняй их в программе.`] : []),
@@ -233,21 +233,26 @@ async function workoutReply(env: Env, telegramUserId: string): Promise<string> {
         `Контекст цели и восстановления ресурсов: ${coachingContext}. Не компенсируй питание чрезмерным тренировочным объёмом.`,
         `Фактическая силовая динамика по совместимым типам веса: ${strengthContext}. Используй её как сигнал, но не повышай нагрузку без целевого RIR и стабильной техники.`,
         `Контекст прогрессии по фактическим подходам: ${progression.context}. Строки «жёсткий потолок» обязательны. Строки «тренерский сигнал» анализируй вместе с историей и сам выбери: повысить минимальным шагом, добавить повторения, удержать, снизить или заменить.`,
-        `Автоматический режим восстановления: ${loadMode}${recovery.reasons.length ? `; причины: ${recovery.reasons.join(", ")}` : ""}. Эти ограничения обязательны.`,
         "Добавки перечислены только как фактический контекст. Не назначай, не отменяй и не меняй их дозировку; не делай медицинских выводов.",
         `Актуальный предтренировочный чекин: ${compactReadiness(readiness)}.`,
       ],
+      recoveryContext: compactRecoveryContext(recoveryInput),
     });
+    if (cycleLoadMode === "deload" && generated.recovery.decision !== "deload") {
+      throw new Error("Gemini попытался отменить активную запланированную разгрузку");
+    }
+    const loadMode = generated.recovery.decision;
     const progressionGuarded = applyProgressionGuard(
       generated.workout,
       progression.assessments,
       new Set(safe.allowed.map((exercise) => exercise.name)),
     );
-    const recoveryGuarded = applyRecoveryLoadGuard(progressionGuarded, recovery.decision);
+    const recoveryGuarded = applyRecoveryLoadGuard(progressionGuarded, loadMode);
     const workout = illnessState.phase ? applyPostIllnessGuard(recoveryGuarded, illnessState.phase) : recoveryGuarded;
     if (testing.length && !workout.exercises.some((exercise) => exercise.name === testing[0].name)) {
       throw new Error("Gemini пропустил обязательное тестируемое упражнение");
     }
+    await recordAutomaticRecoveryAssessment(env.DB, user.id, training.date, recoveryInput, generated.recovery);
     await saveGeneratedPlan(
       env.DB,
       user.id,

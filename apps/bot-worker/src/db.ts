@@ -221,15 +221,19 @@ export async function loadExistingGeneratedPlan(
   plannedFor: string,
   focus: string,
   freshSince: string,
-  loadMode: TrainingLoadMode,
+  loadMode?: TrainingLoadMode,
 ): Promise<GeneratedWorkout | null> {
-  const row = await db.prepare(
+  const loadModeClause = loadMode ? "AND load_mode = ?" : "";
+  const statement = db.prepare(
     `SELECT generated_json FROM workout_plans
      WHERE user_id = ? AND planned_for = ? AND focus = ?
-       AND created_at >= ? AND load_mode = ?
+       AND created_at >= ? ${loadModeClause}
        AND status IN ('sent', 'accepted') AND generated_json IS NOT NULL
      ORDER BY created_at DESC LIMIT 1`,
-  ).bind(userId, plannedFor, focus, freshSince, loadMode).first<ExistingPlanRow>();
+  );
+  const row = await (loadMode
+    ? statement.bind(userId, plannedFor, focus, freshSince, loadMode)
+    : statement.bind(userId, plannedFor, focus, freshSince)).first<ExistingPlanRow>();
   if (!row?.generated_json) return null;
   try {
     return JSON.parse(row.generated_json) as GeneratedWorkout;
