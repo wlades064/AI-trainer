@@ -12,7 +12,9 @@ interface Row {
   pain_json: string;
   occurrence_id: number;
   position: number;
-  exercise_name: string;
+  actual_exercise_name: string;
+  planned_exercise_name: string | null;
+  raw_text: string | null;
   target_sets: number | null;
   target_reps: string | null;
   reps: number | null;
@@ -29,17 +31,42 @@ function painReported(raw: string): boolean {
   } catch { return true; }
 }
 
+function reportMetadata(raw: string | null, plannedName: string, actualName: string): {
+  status: ExerciseProgressionAssessment["reportStatus"];
+  replacementName: string | null;
+} {
+  try {
+    const value = JSON.parse(raw ?? "") as { status?: unknown; substitutionName?: unknown };
+    const status = ["completed", "partial", "skipped", "substituted"].includes(String(value.status))
+      ? value.status as NonNullable<ExerciseProgressionAssessment["reportStatus"]>
+      : null;
+    const replacementName = status === "substituted"
+      ? typeof value.substitutionName === "string" && value.substitutionName.trim()
+        ? value.substitutionName.trim()
+        : actualName !== plannedName ? actualName : null
+      : null;
+    return { status, replacementName };
+  } catch {
+    return {
+      status: actualName !== plannedName ? "substituted" : null,
+      replacementName: actualName !== plannedName ? actualName : null,
+    };
+  }
+}
+
 export async function loadExerciseProgression(db: D1Database, userId: number, focus?: string): Promise<ExerciseProgressionAssessment[]> {
   const focusClause = focus ? " AND session.focus=?" : "";
   const statement = db.prepare(`SELECT session.id session_id,session.local_date,session.focus,session.load_mode,
       session.last_set_rir,session.technique_stable,session.pain_json,
-      occurrence.id occurrence_id,occurrence.position,exercise.name exercise_name,
+      occurrence.id occurrence_id,occurrence.position,exercise.name actual_exercise_name,
+      planned_exercise.name planned_exercise_name,occurrence.raw_text,
       item.target_sets,item.target_reps,logs.reps,logs.weight_kg,logs.load_basis
     FROM workout_sessions session
     JOIN workout_session_exercises occurrence ON occurrence.session_id=session.id
     JOIN exercises exercise ON exercise.id=occurrence.exercise_id
     LEFT JOIN workout_plan_items item ON item.plan_id=session.plan_id
-      AND item.position=occurrence.source_position AND item.exercise_id=occurrence.exercise_id
+      AND item.position=occurrence.source_position
+    LEFT JOIN exercises planned_exercise ON planned_exercise.id=item.exercise_id
     LEFT JOIN set_logs logs ON logs.session_exercise_id=occurrence.id AND logs.set_type='working'
     WHERE session.user_id=? AND session.confirmed_at IS NOT NULL${focusClause}
       AND session.focus IN('chest','back','legs')
@@ -53,18 +80,17 @@ export async function loadExerciseProgression(db: D1Database, userId: number, fo
   return [...groups.values()].map((rows) => {
     const first = rows[0];
     const working = rows.filter((row) => row.reps !== null);
-    const weighted = working.filter((row) => row.weight_kg !== null);
-    const basis = weighted[0]?.load_basis ?? working[0]?.load_basis ?? null;
-    const sameBasis = weighted.filter((row) => row.load_basis === basis);
+    const plannedName = first.planned_exercise_name ?? first.actual_exercise_name;
+    const metadata = reportMetadata(first.raw_text, plannedName, first.actual_exercise_name);
     return assessExerciseProgression({
       focus: first.focus,
       date: first.local_date,
-      name: first.exercise_name,
+      name: plannedName,
       targetSets: first.target_sets,
       targetReps: first.target_reps,
-      actualReps: working.map((row) => Number(row.reps)),
-      latestWeightKg: sameBasis.length ? Math.max(...sameBasis.map((row) => Number(row.weight_kg))) : null,
-      loadBasis: basis,
+      actualSets: working.map((row) => ({ reps: Number(row.reps), weightKg: row.weight_kg, loadBasis: row.load_basis ?? "unknown" })),
+      reportStatus: metadata.status,
+      replacementName: metadata.replacementName,
       lastSetRir: first.last_set_rir,
       techniqueStable: first.technique_stable === null ? null : first.technique_stable === 1,
       painReported: painReported(first.pain_json),

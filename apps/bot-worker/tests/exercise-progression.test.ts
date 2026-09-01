@@ -9,9 +9,6 @@ const base = {
   name: "Пуловер",
   targetSets: 4,
   targetReps: "12-15",
-  actualReps: [15, 15, 15, 15],
-  latestWeightKg: 50,
-  loadBasis: "machine_display",
   actualSets: [
     { reps: 15, weightKg: 50, loadBasis: "machine_display" },
     { reps: 15, weightKg: 50, loadBasis: "machine_display" },
@@ -32,7 +29,6 @@ test("progression returns all five deterministic decisions", () => {
     {
       input: {
         ...base,
-        actualReps: [12, 13, 14, 15],
         actualSets: base.actualSets.map((set, index) => ({ ...set, reps: 12 + index })),
       },
       expected: "increase_reps",
@@ -74,6 +70,20 @@ test("mixed working weights or load bases cannot prove progression", () => {
 
   assert.equal(assessExerciseProgression({ ...base, actualSets: mixedWeight }).decision, "hold");
   assert.equal(assessExerciseProgression({ ...base, actualSets: mixedBasis }).decision, "hold");
+});
+
+test("bodyweight and added-weight sets are compared as different loads", () => {
+  const weighted = {
+    ...base,
+    name: "Подтягивания узким параллельным хватом",
+    actualSets: base.actualSets.map((set) => ({ ...set, weightKg: 10, loadBasis: "bodyweight" })),
+  };
+  const mixed = weighted.actualSets.map((set, index) => ({ ...set, weightKg: index < 2 ? null : 10 }));
+
+  const assessment = assessExerciseProgression(weighted);
+  assert.equal(assessment.decision, "increase_load");
+  assert.match(progressionWeightGuidance(assessment), /собственный вес \+ 10 кг/i);
+  assert.equal(assessExerciseProgression({ ...weighted, actualSets: mixed }).decision, "hold");
 });
 
 test("progression guard replaces Gemini weight guidance with the deterministic limit", () => {

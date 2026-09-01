@@ -238,7 +238,11 @@ async function workoutReply(env: Env, telegramUserId: string): Promise<string> {
         `Актуальный предтренировочный чекин: ${compactReadiness(readiness)}.`,
       ],
     });
-    const progressionGuarded = applyProgressionGuard(generated.workout, progression.assessments);
+    const progressionGuarded = applyProgressionGuard(
+      generated.workout,
+      progression.assessments,
+      new Set(safe.allowed.map((exercise) => exercise.name)),
+    );
     const recoveryGuarded = applyRecoveryLoadGuard(progressionGuarded, recovery.decision);
     const workout = illnessState.phase ? applyPostIllnessGuard(recoveryGuarded, illnessState.phase) : recoveryGuarded;
     if (testing.length && !workout.exercises.some((exercise) => exercise.name === testing[0].name)) {

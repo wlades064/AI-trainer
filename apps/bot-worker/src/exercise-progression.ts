@@ -7,12 +7,9 @@ export interface ExerciseProgressionInput {
   name: string;
   targetSets: number | null;
   targetReps: string | null;
-  actualReps: number[];
-  latestWeightKg: number | null;
-  loadBasis: string | null;
-  actualSets?: Array<{ reps: number; weightKg: number | null; loadBasis: string }>;
-  reportStatus?: "completed" | "partial" | "skipped" | "substituted" | null;
-  replacementName?: string | null;
+  actualSets: Array<{ reps: number; weightKg: number | null; loadBasis: string }>;
+  reportStatus: "completed" | "partial" | "skipped" | "substituted" | null;
+  replacementName: string | null;
   lastSetRir: number | null;
   techniqueStable: boolean | null;
   painReported: boolean;
@@ -20,6 +17,9 @@ export interface ExerciseProgressionInput {
 }
 
 export interface ExerciseProgressionAssessment extends ExerciseProgressionInput {
+  actualReps: number[];
+  latestWeightKg: number | null;
+  loadBasis: string | null;
   decision: ProgressionDecision;
   reason: string;
 }
@@ -62,13 +62,13 @@ export function parseTargetRepRange(value: string | null): { minimum: number; ma
 }
 
 export function assessExerciseProgression(input: ExerciseProgressionInput): ExerciseProgressionAssessment {
-  const actualSets = input.actualSets ?? input.actualReps.map((reps) => ({
-    reps,
-    weightKg: input.latestWeightKg,
-    loadBasis: input.loadBasis ?? "unknown",
-  }));
+  const actualSets = input.actualSets;
   const actualReps = actualSets.map((set) => set.reps);
-  const base = { ...input, actualSets, actualReps };
+  const recordedBases = new Set(actualSets.map((set) => set.loadBasis));
+  const loadBasis = recordedBases.size === 1 ? actualSets[0]?.loadBasis ?? null : null;
+  const recordedWeights = new Set(actualSets.map((set) => set.weightKg).filter((weight): weight is number => weight !== null));
+  const latestWeightKg = recordedWeights.size === 1 ? [...recordedWeights][0] : null;
+  const base = { ...input, actualReps, latestWeightKg, loadBasis };
   if (input.reportStatus === "substituted" && input.replacementName) {
     return { ...base, decision: "replace_exercise", reason: `в отчёте упражнение заменено на «${input.replacementName}»` };
   }
@@ -92,8 +92,13 @@ export function assessExerciseProgression(input: ExerciseProgressionInput): Exer
   if (loadBases.size !== 1 || loadBases.has("unknown")) {
     return { ...base, decision: "hold", reason: "рабочие подходы имеют несопоставимый или неизвестный тип учёта веса" };
   }
-  const loadBasis = comparedSets[0].loadBasis;
-  if (loadBasis !== "bodyweight") {
+  const comparedLoadBasis = comparedSets[0].loadBasis;
+  if (comparedLoadBasis === "bodyweight") {
+    const bodyweightLoads = new Set(comparedSets.map((set) => set.weightKg === null ? "bodyweight" : `added:${set.weightKg}`));
+    if (bodyweightLoads.size !== 1) {
+      return { ...base, decision: "hold", reason: "подходы со своим весом и добавочным весом нельзя объединять в одну прогрессию" };
+    }
+  } else {
     if (comparedSets.some((set) => set.weightKg === null)) {
       return { ...base, decision: "hold", reason: "вес указан не для всех целевых рабочих подходов" };
     }
@@ -116,7 +121,9 @@ export function assessExerciseProgression(input: ExerciseProgressionInput): Exer
 }
 
 function loadText(value: ExerciseProgressionAssessment): string {
-  if (value.loadBasis === "bodyweight") return "собственный вес";
+  if (value.loadBasis === "bodyweight") return value.latestWeightKg === null
+    ? "собственный вес"
+    : `собственный вес + ${value.latestWeightKg} кг`;
   if (value.latestWeightKg === null) return "последний подтверждённый вес не указан";
   return `${value.latestWeightKg} кг ${BASIS_LABELS[value.loadBasis ?? "unknown"] ?? value.loadBasis ?? ""}`.trim();
 }
@@ -126,7 +133,7 @@ export function progressionWeightGuidance(value: ExerciseProgressionAssessment):
   if (value.decision === "increase_load") return `Разрешён только минимальный доступный шаг нагрузки относительно «${base}» при сохранении техники и RIR не ниже 1.`;
   if (value.decision === "increase_reps") return `Сохрани нагрузку «${base}» и сначала добавляй повторения в целевом диапазоне; вес не повышать.`;
   if (value.decision === "reduce_load") return `Снизить нагрузку относительно «${base}» до стабильной безболезненной техники; повышение веса запрещено.`;
-  if (value.decision === "replace_exercise") return `Заменить упражнение на «${value.replacementName ?? "безопасный разрешённый аналог"}»; исходное упражнение в следующий план не возвращать.`;
+  if (value.decision === "replace_exercise") return `Вместо исходного упражнения используй «${value.replacementName ?? "безопасный разрешённый аналог"}» с нагрузкой не выше «${base}»; повышение веса запрещено.`;
   return `Удерживай нагрузку не выше «${base}»; повышение веса пока не разрешено.`;
 }
 
@@ -148,19 +155,40 @@ export function formatProgressionSummary(values: ExerciseProgressionAssessment[]
   return lines.join("\n");
 }
 
-export function applyProgressionGuard(workout: GeneratedWorkout, values: ExerciseProgressionAssessment[]): GeneratedWorkout {
+export function applyProgressionGuard(
+  workout: GeneratedWorkout,
+  values: ExerciseProgressionAssessment[],
+  allowedExerciseNames?: ReadonlySet<string>,
+): GeneratedWorkout {
   const byName = new Map(values.map((value) => [value.name, value]));
+  const alreadySelected = new Set(workout.exercises.map((exercise) => exercise.name));
+  const exercises: GeneratedWorkout["exercises"] = [];
+  for (const exercise of workout.exercises) {
+    const value = byName.get(exercise.name);
+    if (value?.decision === "replace_exercise") {
+      const replacement = value.replacementName;
+      if (!replacement || (allowedExerciseNames && !allowedExerciseNames.has(replacement))) {
+        throw new Error(`Нет разрешённой подтверждённой замены для упражнения «${exercise.name}»`);
+      }
+      if (alreadySelected.has(replacement)) continue;
+      exercises.push({
+        ...exercise,
+        name: replacement,
+        weightGuidance: progressionWeightGuidance(value),
+        notes: `${exercise.notes} Прогрессия: ${value.reason}.`.trim(),
+      });
+      continue;
+    }
+    exercises.push(value
+      ? { ...exercise, weightGuidance: progressionWeightGuidance(value), notes: `${exercise.notes} Прогрессия: ${value.reason}.`.trim() }
+      : {
+        ...exercise,
+        weightGuidance: "Нет сопоставимого подтверждённого паспорта: начни с консервативного тестового веса, сохрани технику и RIR не ниже 2; это не повышение нагрузки.",
+        notes: `${exercise.notes} Прогрессия: сначала собрать фактический результат для этого упражнения.`.trim(),
+      });
+  }
   return {
     ...workout,
-    exercises: workout.exercises.map((exercise) => {
-      const value = byName.get(exercise.name);
-      return value
-        ? { ...exercise, weightGuidance: progressionWeightGuidance(value), notes: `${exercise.notes} Прогрессия: ${value.reason}.`.trim() }
-        : {
-          ...exercise,
-          weightGuidance: "Нет сопоставимого подтверждённого паспорта: начни с консервативного тестового веса, сохрани технику и RIR не ниже 2; это не повышение нагрузки.",
-          notes: `${exercise.notes} Прогрессия: сначала собрать фактический результат для этого упражнения.`.trim(),
-        };
-    }),
+    exercises,
   };
 }
