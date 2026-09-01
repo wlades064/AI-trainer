@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { applyProgressionGuard, assessExerciseProgression, parseTargetRepRange, progressionWeightGuidance } from "../src/exercise-progression.ts";
+import { applyProgressionGuard, assessExerciseProgression, compactProgressionContext, parseTargetRepRange, progressionWeightGuidance } from "../src/exercise-progression.ts";
 import type { GeneratedWorkout } from "../src/gemini.ts";
 
 const base = {
@@ -109,6 +109,34 @@ test("progression guard replaces Gemini weight guidance with the deterministic l
   const guarded = applyProgressionGuard(workout, [assessExerciseProgression({ ...base, lastSetRir: 0 })]);
   assert.doesNotMatch(guarded.exercises[0].weightGuidance, /как угодно/);
   assert.match(guarded.exercises[0].weightGuidance, /повышение веса пока не разрешено/);
+});
+
+test("Gemini keeps coaching discretion when mixed loads have no hard safety signal", () => {
+  const mixedWeight = base.actualSets.map((set, index) => ({ ...set, weightKg: index < 2 ? 50 : 45 }));
+  const assessment = assessExerciseProgression({ ...base, actualSets: mixedWeight });
+  const workout: GeneratedWorkout = {
+    title: "test",
+    warmup: [],
+    exercises: [{
+      name: "Пуловер",
+      sets: 4,
+      reps: "12-15",
+      weightGuidance: "Первые два подхода 50 кг, затем два back-off подхода 45 кг",
+      restSeconds: 90,
+      notes: "решение Gemini по контексту",
+    }],
+    cooldown: [],
+    safetyNotes: [],
+    programmingRationale: ["test"],
+  };
+
+  assert.equal(assessment.decision, "hold");
+  const guarded = applyProgressionGuard(workout, [assessment]);
+  assert.match(guarded.exercises[0].weightGuidance, /back-off/);
+  assert.match(guarded.exercises[0].notes, /тренерский сигнал/i);
+  assert.match(compactProgressionContext([assessment]), /тренерский сигнал/i);
+  assert.match(compactProgressionContext([assessment]), /50 кг.*по шкале тренажёра.*45 кг/i);
+  assert.match(compactProgressionContext([assessment]), /техника стабильна.*боль нет/i);
 });
 
 test("an exercise without a comparable passport gets a conservative test load", () => {

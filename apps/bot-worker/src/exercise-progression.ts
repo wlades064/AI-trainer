@@ -21,6 +21,7 @@ export interface ExerciseProgressionAssessment extends ExerciseProgressionInput 
   latestWeightKg: number | null;
   loadBasis: string | null;
   decision: ProgressionDecision;
+  constraint: "hard" | "advisory";
   reason: string;
 }
 
@@ -72,42 +73,47 @@ export function assessExerciseProgression(input: ExerciseProgressionInput): Exer
   const base = { ...input, actualReps, latestWeightKg, loadBasis };
   if (input.reportStatus === "substituted") {
     return input.replacementName
-      ? { ...base, decision: "replace_exercise", reason: `в отчёте упражнение заменено на «${input.replacementName}»` }
-      : { ...base, decision: "hold", reason: "замена не подтверждена" };
+      ? { ...base, decision: "replace_exercise", constraint: "hard", reason: `в отчёте упражнение заменено на «${input.replacementName}»` }
+      : { ...base, decision: "hold", constraint: "hard", reason: "замена не подтверждена" };
   }
-  if (input.reportStatus === "skipped") return { ...base, decision: "hold", reason: "упражнение пропущено" };
-  if (input.painReported) return { ...base, decision: "reduce_load", reason: "после тренировки указана боль или неприятные ощущения" };
-  if (input.techniqueStable === false) return { ...base, decision: "reduce_load", reason: "техника в рабочих подходах была нестабильной" };
-  if (input.reportStatus === "partial") return { ...base, decision: "hold", reason: "упражнение отмечено выполненным частично" };
+  if (input.reportStatus === "skipped") return { ...base, decision: "hold", constraint: "hard", reason: "упражнение пропущено" };
+  if (input.painReported) return { ...base, decision: "reduce_load", constraint: "hard", reason: "после тренировки указана боль или неприятные ощущения" };
+  if (input.techniqueStable === false) return { ...base, decision: "reduce_load", constraint: "hard", reason: "техника в рабочих подходах была нестабильной" };
+  if (input.reportStatus === "partial") return { ...base, decision: "hold", constraint: "hard", reason: "упражнение отмечено выполненным частично" };
   if (input.loadMode !== "normal") return {
     ...base,
     decision: "hold",
+    constraint: "hard",
     reason: input.loadMode === "deload"
       ? "разгрузочная тренировка не используется для повышения нагрузки"
       : "облегчённая тренировка из-за восстановления не используется для повышения нагрузки",
   };
-  if (input.techniqueStable === null) return { ...base, decision: "hold", reason: "стабильность техники не зафиксирована" };
-  if (input.lastSetRir === null) return { ...base, decision: "hold", reason: "RIR последних рабочих подходов не зафиксирован" };
+  if (input.techniqueStable === null) return { ...base, decision: "hold", constraint: "hard", reason: "стабильность техники не зафиксирована" };
+  if (input.lastSetRir === null) return { ...base, decision: "hold", constraint: "hard", reason: "RIR последних рабочих подходов не зафиксирован" };
+  if (input.lastSetRir <= 0) return { ...base, decision: "hold", constraint: "hard", reason: "верхняя граница достигнута, но RIR 0 запрещает повышение веса" };
   const range = parseTargetRepRange(input.targetReps);
-  if (!range || !input.targetSets) return { ...base, decision: "hold", reason: "нет сопоставимого целевого диапазона плана" };
-  if (actualReps.length < input.targetSets) return { ...base, decision: "hold", reason: `выполнено ${actualReps.length} из ${input.targetSets} рабочих подходов` };
+  if (!range || !input.targetSets) return { ...base, decision: "hold", constraint: "hard", reason: "нет сопоставимого целевого диапазона плана" };
+  if (actualReps.length < input.targetSets) return { ...base, decision: "hold", constraint: "hard", reason: `выполнено ${actualReps.length} из ${input.targetSets} рабочих подходов` };
   const comparedSets = referenceSets;
+  if (comparedSets.some((set) => set.reps < range.minimum)) {
+    return { ...base, decision: "hold", constraint: "hard", reason: `минимум ${range.minimum} повторений достигнут не во всех целевых подходах` };
+  }
   const loadBases = new Set(comparedSets.map((set) => set.loadBasis));
   if (loadBases.size !== 1 || loadBases.has("unknown")) {
-    return { ...base, decision: "hold", reason: "рабочие подходы имеют несопоставимый или неизвестный тип учёта веса" };
+    return { ...base, decision: "hold", constraint: "hard", reason: "рабочие подходы имеют несопоставимый или неизвестный тип учёта веса" };
   }
   const comparedLoadBasis = comparedSets[0].loadBasis;
   if (comparedLoadBasis === "bodyweight") {
     const bodyweightLoads = new Set(comparedSets.map((set) => set.weightKg === null ? "bodyweight" : `added:${set.weightKg}`));
     if (bodyweightLoads.size !== 1) {
-      return { ...base, decision: "hold", reason: "подходы со своим весом и добавочным весом нельзя объединять в одну прогрессию" };
+      return { ...base, decision: "hold", constraint: "hard", reason: "подходы со своим весом и добавочным весом нельзя объединять в одну прогрессию" };
     }
   } else {
     if (comparedSets.some((set) => set.weightKg === null)) {
-      return { ...base, decision: "hold", reason: "вес указан не для всех целевых рабочих подходов" };
+      return { ...base, decision: "hold", constraint: "hard", reason: "вес указан не для всех целевых рабочих подходов" };
     }
     const weights = new Set(comparedSets.map((set) => set.weightKg));
-    if (weights.size !== 1) return { ...base, decision: "hold", reason: "целевые рабочие подходы выполнены с разным весом" };
+    if (weights.size !== 1) return { ...base, decision: "hold", constraint: "advisory", reason: "целевые рабочие подходы выполнены с разным весом" };
   }
   const decision = decideProgression({
     completedReps: actualReps.slice(0, input.targetSets),
@@ -117,11 +123,10 @@ export function assessExerciseProgression(input: ExerciseProgressionInput): Exer
     techniqueStable: true,
     jointPain: false,
   });
-  const reason = decision === "increase_load" ? `все рабочие подходы достигли ${range.maximum} повторений при RIR ${input.lastSetRir}`
-    : decision === "increase_reps" ? `выполнен диапазон от ${range.minimum}, но верхняя граница достигнута не во всех подходах`
-      : actualReps.every((reps) => reps >= range.maximum) && input.lastSetRir === 0 ? "верхняя граница достигнута, но RIR 0 запрещает повышение веса"
-        : `целевой объём ${input.targetSets} × ${input.targetReps} ещё не закрыт`;
-  return { ...base, decision, reason };
+  const reason = decision === "increase_load"
+    ? `все рабочие подходы достигли ${range.maximum} повторений при RIR ${input.lastSetRir}`
+    : `выполнен диапазон от ${range.minimum}, но верхняя граница достигнута не во всех подходах`;
+  return { ...base, decision, constraint: "advisory", reason };
 }
 
 function loadText(value: ExerciseProgressionAssessment): string {
@@ -141,9 +146,24 @@ export function progressionWeightGuidance(value: ExerciseProgressionAssessment):
   return `Удерживай нагрузку не выше «${base}»; повышение веса пока не разрешено.`;
 }
 
+function factualSets(value: ExerciseProgressionAssessment): string {
+  if (!value.actualSets.length) return "подходы не подтверждены";
+  return value.actualSets.map((set) => {
+    const load = set.loadBasis === "bodyweight"
+      ? set.weightKg === null ? "свой вес" : `свой вес + ${set.weightKg} кг`
+      : set.weightKg === null ? "вес не указан" : `${set.weightKg} кг`;
+    const basis = set.loadBasis === "bodyweight" ? "" : BASIS_LABELS[set.loadBasis] ?? set.loadBasis;
+    return `${load}${basis ? ` (${basis})` : ""} × ${set.reps}`;
+  }).join(", ");
+}
+
 export function compactProgressionContext(values: ExerciseProgressionAssessment[]): string {
   if (!values.length) return "детерминированных решений пока нет";
-  return values.slice(0, 8).map((value) => `${value.name}: ${DECISION_LABELS[value.decision]} (${value.reason})`).join("; ");
+  return values.slice(0, 8).map((value) => {
+    const role = value.constraint === "hard" ? "жёсткий потолок" : "тренерский сигнал";
+    const technique = value.techniqueStable === true ? "стабильна" : value.techniqueStable === false ? "нестабильна" : "не указана";
+    return `${value.name}: план ${value.targetSets ?? "?"} × ${value.targetReps ?? "?"}; факт ${factualSets(value)}; RIR ${value.lastSetRir ?? "?"}; техника ${technique}; боль ${value.painReported ? "есть" : "нет"}; режим ${value.loadMode}; ${role}: ${DECISION_LABELS[value.decision]} (${value.reason})`;
+  }).join("; ");
 }
 
 export function formatProgressionSummary(values: ExerciseProgressionAssessment[]): string {
@@ -153,9 +173,10 @@ export function formatProgressionSummary(values: ExerciseProgressionAssessment[]
   for (const value of values) {
     const heading = `${value.focus}|${value.date}`;
     if (heading !== previous) { lines.push("", `${value.date} — ${FOCUS_LABELS[value.focus] ?? value.focus}:`); previous = heading; }
-    lines.push(`• ${value.name}: ${DECISION_LABELS[value.decision]}; ${value.reason}. База: ${loadText(value)}.`);
+    const role = value.constraint === "hard" ? "жёсткий потолок" : "тренерский сигнал";
+    lines.push(`• ${value.name}: ${role}; ${DECISION_LABELS[value.decision]}; ${value.reason}. База: ${loadText(value)}.`);
   }
-  lines.push("", "Это ограничитель следующего плана, а не автоматическая команда повышать вес. Gemini не использовался.");
+  lines.push("", "Жёсткий потолок обязателен для следующего плана. Остальные строки служат тренерским сигналом для Gemini. Сводка рассчитана без вызова модели.");
   return lines.join("\n");
 }
 
@@ -184,7 +205,9 @@ export function applyProgressionGuard(
       continue;
     }
     exercises.push(value
-      ? { ...exercise, weightGuidance: progressionWeightGuidance(value), notes: `${exercise.notes} Прогрессия: ${value.reason}.`.trim() }
+      ? value.constraint === "hard"
+        ? { ...exercise, weightGuidance: progressionWeightGuidance(value), notes: `${exercise.notes} Жёсткий потолок прогрессии: ${value.reason}.`.trim() }
+        : { ...exercise, notes: `${exercise.notes} Тренерский сигнал прогрессии: ${value.reason}.`.trim() }
       : {
         ...exercise,
         weightGuidance: "Нет сопоставимого подтверждённого паспорта: начни с консервативного тестового веса, сохрани технику и RIR не ниже 2; это не повышение нагрузки.",

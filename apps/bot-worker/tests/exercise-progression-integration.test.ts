@@ -68,7 +68,7 @@ async function confirmWithStableCheckin(db: D1Database, sqlite: DatabaseSync, dr
     WHERE id=?`).run(confirmed.sessionId);
 }
 
-test("plan to report to next plan holds weight when working sets used different loads", async () => {
+test("plan to report to next plan lets Gemini interpret mixed working and back-off loads", async () => {
   const { db, sqlite } = testDatabase();
   seedPlan(sqlite);
   await confirmWithStableCheckin(db, sqlite, report({
@@ -84,8 +84,8 @@ test("plan to report to next plan holds weight when working sets used different 
 
   assert.equal(assessments[0].decision, "hold");
   assert.match(assessments[0].reason, /разным весом/i);
-  assert.doesNotMatch(nextPlan.exercises[0].weightGuidance, /Решение Gemini/);
-  assert.match(nextPlan.exercises[0].weightGuidance, /повышение веса пока не разрешено/i);
+  assert.equal(nextPlan.exercises[0].weightGuidance, "Решение Gemini");
+  assert.match(nextPlan.exercises[0].notes, /тренерский сигнал/i);
   sqlite.close();
 });
 
