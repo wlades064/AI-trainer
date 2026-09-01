@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { applyPostIllnessGuard, parseIllnessAction, parseIllnessDate, postIllnessPhase, postIllnessRules } from "../src/illness.ts";
+import { applyPostIllnessSafetyGuard, parseIllnessAction, parseIllnessDate, postIllnessPhase, postIllnessRules } from "../src/illness.ts";
 import type { GeneratedWorkout } from "../src/gemini.ts";
 
 test("illness dialog accepts explicit actions and safe historical dates", () => {
@@ -21,11 +21,12 @@ test("only confirmed workouts advance the two return phases", () => {
   assert.equal(postIllnessPhase(8), null);
 });
 
-test("return rules explain conservative progression without diagnosis", () => {
-  assert.match(postIllnessRules(1).join(" "), /70-80%/);
-  assert.match(postIllnessRules(1).join(" "), /3-4 повторения/);
-  assert.match(postIllnessRules(2).join(" "), /80-90%/);
-  assert.match(postIllnessRules(2).join(" "), /2-3 повторения/);
+test("return rules give Gemini the phase and decision criteria without fixed percentages", () => {
+  assert.match(postIllnessRules(1).join(" "), /первая фактически выполняемая тренировка/i);
+  assert.match(postIllnessRules(1).join(" "), /выбери.*reduced.*deload/i);
+  assert.match(postIllnessRules(2).join(" "), /предыдущей тренировки/i);
+  assert.doesNotMatch(postIllnessRules(1).join(" "), /70-80%/);
+  assert.doesNotMatch(postIllnessRules(2).join(" "), /80-90%/);
 });
 
 const workout: GeneratedWorkout = {
@@ -37,18 +38,18 @@ const workout: GeneratedWorkout = {
   programmingRationale: ["прогрессия"],
 };
 
-test("phase one guard overrides Gemini volume and weight guidance", () => {
-  const result = applyPostIllnessGuard(workout, 1);
-  assert.equal(result.exercises[0].sets, 3);
-  assert.match(result.exercises[0].weightGuidance, /70-80%/);
-  assert.match(result.exercises[0].notes, /RIR 3-4/);
+test("post-illness safety guard preserves Gemini programming and adds medical stop signs", () => {
+  const result = applyPostIllnessSafetyGuard(workout, 1);
+  assert.equal(result.exercises[0].sets, 4);
+  assert.equal(result.exercises[0].weightGuidance, "50 кг");
+  assert.equal(result.exercises[0].notes, "ровный темп");
   assert.match(result.safetyNotes.join(" "), /прекрати тренировку/);
+  assert.match(result.title, /возвращение после болезни, фаза 1/i);
   assert.equal(workout.exercises[0].sets, 4);
 });
 
-test("phase two guard remains conservative but moves toward normal load", () => {
-  const result = applyPostIllnessGuard(workout, 2);
-  assert.equal(result.exercises[0].sets, 3);
-  assert.match(result.exercises[0].weightGuidance, /80-90%/);
-  assert.match(result.exercises[0].notes, /RIR 2-3/);
+test("post-illness safety note is idempotent", () => {
+  const once = applyPostIllnessSafetyGuard(workout, 2);
+  const twice = applyPostIllnessSafetyGuard(once, 2);
+  assert.deepEqual(twice.safetyNotes, once.safetyNotes);
 });

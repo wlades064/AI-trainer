@@ -7,7 +7,7 @@ import {
   type AutomaticRecoveryInput,
 } from "../src/automatic-recovery.ts";
 import type { GeneratedWorkout } from "../src/gemini.ts";
-import { applyPostIllnessGuard } from "../src/illness.ts";
+import { applyPostIllnessSafetyGuard } from "../src/illness.ts";
 
 const baseline = (): AutomaticRecoveryInput => ({
   readiness: {
@@ -133,10 +133,10 @@ test("stop decision cannot produce a workout", () => {
   assert.throws(() => applyRecoveryLoadGuard(generatedWorkout(), "stop"), /остановлена/i);
 });
 
-test("post-illness guard stays stricter than the general reduced guard", () => {
+test("post-illness safety guard does not replace the recovery mode chosen by Gemini", () => {
   const recoveryGuarded = applyRecoveryLoadGuard(generatedWorkout(), "reduced");
-  const guarded = applyPostIllnessGuard(recoveryGuarded, 1);
+  const guarded = applyPostIllnessSafetyGuard(recoveryGuarded, 1);
 
-  assert.ok(guarded.exercises.every((exercise) => /70-80%/.test(exercise.weightGuidance)));
-  assert.ok(guarded.exercises.every((exercise) => /RIR 3-4/.test(exercise.notes)));
+  assert.deepEqual(guarded.exercises, recoveryGuarded.exercises);
+  assert.match(guarded.safetyNotes.join(" "), /После болезни/i);
 });

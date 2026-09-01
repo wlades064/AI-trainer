@@ -169,5 +169,5 @@ export async function answerIllnessConversation(db: D1Database, userId: number, 
   const absenceCount = await backfillIllnessAbsences(db, userId, active.id, active.started_on, addDays(date, -1));
   await db.prepare("UPDATE illness_conversations SET status='completed',completed_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP WHERE id=?").bind(row.id).run();
   await db.prepare("INSERT INTO system_events(event_type,payload_json)VALUES('illness_recovered',?)").bind(JSON.stringify({ absenceCount })).run();
-  return `Выздоровление отмечено с ${date}. Следующие две фактически выполненные тренировки будут облегчёнными; пропуски не продвигают возвращение.`;
+  return `Выздоровление отмечено с ${date}. Следующие две фактически выполненные тренировки будут составлены с учётом этапа возвращения и текущего чекина; пропуски не продвигают возвращение.`;
 }

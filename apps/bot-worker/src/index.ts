@@ -77,7 +77,7 @@ import { dataStatus } from "./data-status-db.ts";
 import { programStatus } from "./program-status-db.ts";
 import { compactExerciseProgression, exerciseProgressionSummary } from "./exercise-progression-db.ts";
 import { applyProgressionGuard } from "./exercise-progression.ts";
-import { applyPostIllnessGuard, postIllnessRules } from "./illness.ts";
+import { applyPostIllnessSafetyGuard, postIllnessRules } from "./illness.ts";
 import { answerIllnessConversation, cancelIllnessConversation, loadIllnessTrainingState, startIllnessConversation } from "./illness-db.ts";
 import { findTelegramUserId, loadActiveTransientDialogs, loadOrphanedTransientDialogKeys } from "./transient-dialog-db.ts";
 import { planTransientDialogMessages } from "./transient-dialog.ts";
@@ -248,7 +248,7 @@ async function workoutReply(env: Env, telegramUserId: string): Promise<string> {
       new Set(safe.allowed.map((exercise) => exercise.name)),
     );
     const recoveryGuarded = applyRecoveryLoadGuard(progressionGuarded, loadMode);
-    const workout = illnessState.phase ? applyPostIllnessGuard(recoveryGuarded, illnessState.phase) : recoveryGuarded;
+    const workout = illnessState.phase ? applyPostIllnessSafetyGuard(recoveryGuarded, illnessState.phase) : recoveryGuarded;
     if (testing.length && !workout.exercises.some((exercise) => exercise.name === testing[0].name)) {
       throw new Error("Gemini пропустил обязательное тестируемое упражнение");
     }
