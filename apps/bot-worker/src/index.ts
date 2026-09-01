@@ -62,6 +62,7 @@ import { applyRecoveryLoadGuard, assessRecoverySafety, compactRecoveryContext } 
 import { compactStrengthContext, strengthProgressSummary } from "./strength-analytics-db.ts";
 import { answerInjuryConversation, cancelInjuryConversation, startInjuryConversation } from "./injuries-db.ts";
 import { answerReintroductionConversation, cancelReintroductionConversation, startReintroductionConversation } from "./reintroduction-db.ts";
+import { applyReintroductionApproval, findReintroductionApprovalOffer, reintroductionApprovalMarkup, reintroductionApprovalText } from "./reintroduction-approval-db.ts";
 import { answerExerciseCatalogConversation, cancelExerciseCatalogConversation, startExerciseCatalogConversation } from "./exercise-catalog-db.ts";
 import { answerExerciseAddConversation, cancelExerciseAddConversation } from "./exercise-add-db.ts";
 import { answerScheduleConversation, cancelScheduleConversation, loadScheduleOverride, startScheduleConversation } from "./schedule-management-db.ts";
@@ -465,12 +466,26 @@ async function handleCallbackQuery(update: TelegramUpdate, env: Env): Promise<Re
   const callback = update.callback_query;
   if (!callback) return new Response("ok");
   if (String(callback.from.id) !== env.ALLOWED_TELEGRAM_USER_ID) return new Response("forbidden", { status: 403 });
-  await answerTelegramCallbackQuery(env.TELEGRAM_BOT_TOKEN, callback.id);
   const message = callback.message;
-  if (!message || !callback.data?.startsWith("measure:")) return new Response("ok");
+  if (!message) {
+    await answerTelegramCallbackQuery(env.TELEGRAM_BOT_TOKEN, callback.id);
+    return new Response("ok");
+  }
 
   const telegramUserId = String(callback.from.id);
   const user = await ensureUser(env.DB, telegramUserId, env.APP_TIMEZONE || "Europe/Samara");
+  if (callback.data?.startsWith("reintro:")) {
+    const result = await applyReintroductionApproval(env.DB, user.id, callback.data);
+    try {
+      await deleteTelegramMessages(env.TELEGRAM_BOT_TOKEN, message.chat.id, [message.message_id]);
+    } catch (error) {
+      await recordDialogCleanupFailure(env, error);
+    }
+    await answerTelegramCallbackQuery(env.TELEGRAM_BOT_TOKEN, callback.id, fetch, result.notification);
+    return new Response("ok");
+  }
+  await answerTelegramCallbackQuery(env.TELEGRAM_BOT_TOKEN, callback.id);
+  if (!callback.data?.startsWith("measure:")) return new Response("ok");
   const transientDialogsBefore = await loadActiveTransientDialogs(env.DB, user.id);
   const action = await runMeasurementMenuAction(env.DB, user.id, callback.data);
   if (!action) return new Response("ok");
@@ -716,6 +731,10 @@ async function handleUpdate(update: TelegramUpdate, env: Env): Promise<Response>
     return new Response("ok");
   }
   const transientDialogsAfter = await loadActiveTransientDialogs(env.DB, userId);
+  const completedPostWorkoutCheckin = transientDialogsBefore.find((dialog) =>
+    dialog.flowType === "post_workout_checkin"
+    && !transientDialogsAfter.some((current) => current.dialogKey === dialog.dialogKey)
+  );
   const isDataUpload = Boolean(
     (message.document && /^\/fatsecret(?:@\w+)?$/i.test(text))
     || (message.photo?.length && /^\/(?:nutrition|labphoto)(?:@\w+)?$/i.test(text)),
@@ -755,6 +774,17 @@ async function handleUpdate(update: TelegramUpdate, env: Env): Promise<Response>
     deleteMessages: (chatId, messageIds) => deleteTelegramMessages(env.TELEGRAM_BOT_TOKEN, chatId, messageIds),
     onCleanupFailure: (error) => recordDialogCleanupFailure(env, error),
   });
+  if (completedPostWorkoutCheckin && text !== "/cancel") {
+    const offer = await findReintroductionApprovalOffer(env.DB, userId, completedPostWorkoutCheckin.flowId);
+    if (offer) {
+      await sendTelegramMessage(
+        env.TELEGRAM_BOT_TOKEN,
+        message.chat.id,
+        reintroductionApprovalText(offer),
+        reintroductionApprovalMarkup(offer),
+      );
+    }
+  }
   return new Response("ok");
 }
 

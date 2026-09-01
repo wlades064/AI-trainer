@@ -74,11 +74,12 @@ export async function answerTelegramCallbackQuery(
   token: string,
   callbackQueryId: string,
   fetchImpl: typeof fetch = fetch,
+  notificationText?: string,
 ): Promise<void> {
   const response = await fetchImpl(`https://api.telegram.org/bot${token}/answerCallbackQuery`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ callback_query_id: callbackQueryId }),
+    body: JSON.stringify({ callback_query_id: callbackQueryId, ...(notificationText ? { text: notificationText.slice(0, 200) } : {}) }),
   });
   if (!response.ok) throw new Error(`Telegram answerCallbackQuery failed: ${response.status}`);
   const payload = await response.json<{ ok: boolean; result?: boolean }>();
