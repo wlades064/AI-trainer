@@ -66,6 +66,8 @@ test("Gemini generateContent request is stateless and parses structured response
   assert.equal("store" in (sentBody ?? {}), false);
   assert.ok(Array.isArray(sentBody?.contents));
   assert.equal(result.workout.exercises[0].name, "Жим лёжа");
+  assert.equal("loadMode" in result.workout, false);
+  assert.equal("recoveryRationale" in result.workout, false);
   assert.deepEqual(result.recovery, {
     decision: "reduced",
     reasons: ["Недостаток сна требует облегчённой нагрузки"],

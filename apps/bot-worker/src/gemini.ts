@@ -101,18 +101,19 @@ export function validateWorkoutGeneration(
   allowedNames: Set<string>,
 ): { workout: GeneratedWorkout; recovery: GeminiRecoveryDecision } {
   if (!value || typeof value !== "object") throw new Error("Некорректный JSON тренировки");
-  const generated = value as { loadMode?: unknown; recoveryRationale?: unknown };
-  if (!(["normal", "reduced", "deload"] as unknown[]).includes(generated.loadMode)) {
+  const { loadMode, recoveryRationale, ...workoutValue } = value as Record<string, unknown>;
+  if (!(["normal", "reduced", "deload"] as unknown[]).includes(loadMode)) {
     throw new Error("Gemini вернул неизвестный режим восстановления");
   }
-  if (!isStringArray(generated.recoveryRationale) || generated.recoveryRationale.length === 0 || generated.recoveryRationale.length > 6) {
+  if (!isStringArray(recoveryRationale) || recoveryRationale.length === 0 || recoveryRationale.length > 6
+    || recoveryRationale.some((reason) => reason.trim().length === 0)) {
     throw new Error("Gemini не объяснил режим восстановления");
   }
   return {
-    workout: validateGeneratedWorkout(value, allowedNames),
+    workout: validateGeneratedWorkout(workoutValue, allowedNames),
     recovery: {
-      decision: generated.loadMode as TrainingLoadMode,
-      reasons: generated.recoveryRationale,
+      decision: loadMode as TrainingLoadMode,
+      reasons: recoveryRationale,
     },
   };
 }
