@@ -33,6 +33,45 @@ export interface AutomaticRecoveryAssessment {
   reasons: string[];
 }
 
+export interface RecoverySafetyAssessment {
+  allowed: boolean;
+  reasons: string[];
+}
+
+export function assessRecoverySafety(input: AutomaticRecoveryInput): RecoverySafetyAssessment {
+  const reasons = [
+    input.illnessActive ? "активная болезнь" : null,
+    input.readiness.hasNewSwelling ? "новый отёк" : null,
+    input.readiness.hasInstability ? "нестабильность сустава" : null,
+    input.readiness.feelsUnwell ? "плохое общее самочувствие" : null,
+    input.readiness.pain >= 7 ? "сильная боль" : null,
+  ].filter((reason): reason is string => reason !== null);
+  return { allowed: reasons.length === 0, reasons };
+}
+
+export function compactRecoveryContext(input: AutomaticRecoveryInput): string {
+  const postIllness = input.postIllnessPhase === null ? "нет" : `этап ${input.postIllnessPhase}`;
+  const checkins = input.recentCheckins.length
+    ? input.recentCheckins.map((checkin, index) => [
+      `${index + 1}: усилие ${checkin.effort ?? "?"}/10`,
+      `RIR ${checkin.rir ?? "?"}`,
+      `самочувствие ${checkin.wellbeing ?? "?"}/5`,
+      `боль ${checkin.painReported ? "да" : "нет"}`,
+      `техника ${checkin.techniqueStable === null ? "?" : checkin.techniqueStable ? "стабильна" : "нестабильна"}`,
+    ].join(", ")).join("; ")
+    : "нет";
+  return [
+    `сон: качество ${input.readiness.sleepQuality}/5`,
+    `энергия: ${input.readiness.energy}/5`,
+    `боль: ${input.readiness.pain}/10`,
+    `после болезни: ${postIllness}`,
+    `запланированная разгрузка: ${input.scheduledDeloadActive ? "да" : "нет"}`,
+    `завершено тяжёлых недель: ${input.completedHardWeeks}`,
+    `снижений результата подряд: ${input.consecutivePerformanceDeclines}`,
+    `последние послетренировочные чекины: ${checkins}`,
+  ].join("; ");
+}
+
 function poorCheckin(checkin: RecentRecoveryCheckin): boolean {
   return (checkin.effort !== null && checkin.effort >= 9)
     || (checkin.wellbeing !== null && checkin.wellbeing <= 2)

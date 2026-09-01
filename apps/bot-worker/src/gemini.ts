@@ -1,4 +1,5 @@
 import type { ActiveRestriction, ExerciseCandidate } from "./domain/safety.ts";
+import type { TrainingLoadMode } from "./domain/programming.ts";
 
 export interface GeneratedExercise {
   name: string;
@@ -18,6 +19,11 @@ export interface GeneratedWorkout {
   programmingRationale: string[];
 }
 
+export interface GeminiRecoveryDecision {
+  decision: TrainingLoadMode;
+  reasons: string[];
+}
+
 interface GenerateContentResponse {
   candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>;
   usageMetadata?: { promptTokenCount?: number; candidatesTokenCount?: number };
@@ -27,6 +33,8 @@ const WORKOUT_SCHEMA = {
   type: "object",
   additionalProperties: false,
   properties: {
+    loadMode: { type: "string", enum: ["normal", "reduced", "deload"] },
+    recoveryRationale: { type: "array", items: { type: "string" }, minItems: 1, maxItems: 6 },
     title: { type: "string" },
     warmup: { type: "array", items: { type: "string" }, maxItems: 8 },
     exercises: {
@@ -51,7 +59,7 @@ const WORKOUT_SCHEMA = {
     safetyNotes: { type: "array", items: { type: "string" }, maxItems: 8 },
     programmingRationale: { type: "array", items: { type: "string" }, minItems: 1, maxItems: 8 },
   },
-  required: ["title", "warmup", "exercises", "cooldown", "safetyNotes", "programmingRationale"],
+  required: ["loadMode", "recoveryRationale", "title", "warmup", "exercises", "cooldown", "safetyNotes", "programmingRationale"],
 } as const;
 
 function outputText(response: GenerateContentResponse): string {
@@ -88,6 +96,27 @@ export function validateGeneratedWorkout(value: unknown, allowedNames: Set<strin
   return plan as GeneratedWorkout;
 }
 
+export function validateWorkoutGeneration(
+  value: unknown,
+  allowedNames: Set<string>,
+): { workout: GeneratedWorkout; recovery: GeminiRecoveryDecision } {
+  if (!value || typeof value !== "object") throw new Error("Некорректный JSON тренировки");
+  const generated = value as { loadMode?: unknown; recoveryRationale?: unknown };
+  if (!(["normal", "reduced", "deload"] as unknown[]).includes(generated.loadMode)) {
+    throw new Error("Gemini вернул неизвестный режим восстановления");
+  }
+  if (!isStringArray(generated.recoveryRationale) || generated.recoveryRationale.length === 0 || generated.recoveryRationale.length > 6) {
+    throw new Error("Gemini не объяснил режим восстановления");
+  }
+  return {
+    workout: validateGeneratedWorkout(value, allowedNames),
+    recovery: {
+      decision: generated.loadMode as TrainingLoadMode,
+      reasons: generated.recoveryRationale,
+    },
+  };
+}
+
 export function buildWorkoutPrompt(input: {
   date: string;
   focus: string;
@@ -97,6 +126,7 @@ export function buildWorkoutPrompt(input: {
   restrictions: ActiveRestriction[];
   recentSummary?: string;
   selectionGuidance?: string[];
+  recoveryContext?: string;
 }): string {
   return [
     "Ты составляешь одну силовую тренировку. Не ставь диагнозы и не меняй медицинские назначения.",
@@ -107,6 +137,8 @@ export function buildWorkoutPrompt(input: {
     `Ограничения: ${JSON.stringify(input.restrictions)}.`,
     `Краткая история: ${input.recentSummary || "нет подтверждённых данных"}.`,
     `Правила подбора: ${JSON.stringify(input.selectionGuidance || [])}.`,
+    `Факты восстановления: ${input.recoveryContext || "нет данных"}.`,
+    "Сам выбери loadMode: normal, reduced или deload. Оцени факты вместе, а не по одному механическому порогу. Активная запланированная разгрузка означает deload. После болезни учитывай этап возвращения. В recoveryRationale укажи только фактические причины решения, без диагнозов.",
     "Обычно выбери 4 упражнения на основную группу и 2 дополнительных. Не добавляй упражнения только ради количества.",
     "В weightGuidance укажи консервативный ориентир из истории или способ подобрать вес по технике и запасу повторений.",
     "Нагрузка должна быть консервативной; при боли упражнение прекращается.",
@@ -119,7 +151,7 @@ export async function generateWorkout(
   model: string,
   input: Parameters<typeof buildWorkoutPrompt>[0],
   fetchImpl: typeof fetch = fetch,
-): Promise<{ workout: GeneratedWorkout; inputTokens: number; outputTokens: number }> {
+): Promise<{ workout: GeneratedWorkout; recovery: GeminiRecoveryDecision; inputTokens: number; outputTokens: number }> {
   if (input.exercises.length === 0) throw new Error("Нет разрешённых упражнений для генерации");
   const response = await fetchImpl(
     `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`,
@@ -140,9 +172,9 @@ export async function generateWorkout(
     throw new Error(`Gemini API error: ${response.status}; ${detail}`);
   }
   const generated = await response.json<GenerateContentResponse>();
-  const workout = validateGeneratedWorkout(JSON.parse(outputText(generated)), new Set(input.exercises.map(({ name }) => name)));
+  const parsed = validateWorkoutGeneration(JSON.parse(outputText(generated)), new Set(input.exercises.map(({ name }) => name)));
   return {
-    workout,
+    ...parsed,
     inputTokens: generated.usageMetadata?.promptTokenCount ?? 0,
     outputTokens: generated.usageMetadata?.candidatesTokenCount ?? 0,
   };

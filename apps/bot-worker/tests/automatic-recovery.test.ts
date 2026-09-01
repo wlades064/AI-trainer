@@ -2,9 +2,9 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   applyRecoveryLoadGuard,
-  assessAutomaticRecovery,
+  assessRecoverySafety,
+  compactRecoveryContext,
   type AutomaticRecoveryInput,
-  type RecoveryLoadDecision,
 } from "../src/automatic-recovery.ts";
 import type { GeneratedWorkout } from "../src/gemini.ts";
 import { applyPostIllnessGuard } from "../src/illness.ts";
@@ -26,25 +26,22 @@ const baseline = (): AutomaticRecoveryInput => ({
   recentCheckins: [],
 });
 
-const cases: Array<{ name: string; input: AutomaticRecoveryInput; expected: RecoveryLoadDecision }> = [
-  { name: "normal load", input: baseline(), expected: "normal" },
+const advisoryCases: Array<{ name: string; input: AutomaticRecoveryInput }> = [
+  { name: "normal recovery facts", input: baseline() },
   {
-    name: "reduced load after acute low sleep and energy",
+    name: "low sleep and energy",
     input: { ...baseline(), readiness: { ...baseline().readiness, sleepQuality: 2, energy: 2 } },
-    expected: "reduced",
   },
   {
-    name: "deload after six completed hard weeks",
+    name: "six completed hard weeks",
     input: { ...baseline(), completedHardWeeks: 6 },
-    expected: "deload",
   },
   {
     name: "an already scheduled deload",
     input: { ...baseline(), scheduledDeloadActive: true },
-    expected: "deload",
   },
   {
-    name: "deload when persistent poor checkins accompany performance decline",
+    name: "persistent poor checkins and performance decline",
     input: {
       ...baseline(),
       completedHardWeeks: 4,
@@ -54,21 +51,48 @@ const cases: Array<{ name: string; input: AutomaticRecoveryInput; expected: Reco
         { effort: 9, rir: 0, wellbeing: 2, painReported: true, techniqueStable: false },
       ],
     },
-    expected: "deload",
   },
-  {
-    name: "stop for a current safety red flag",
-    input: { ...baseline(), readiness: { ...baseline().readiness, hasNewSwelling: true } },
-    expected: "stop",
-  },
-  { name: "stop during active illness", input: { ...baseline(), illnessActive: true }, expected: "stop" },
+  { name: "first post-illness session", input: { ...baseline(), postIllnessPhase: 1 } },
 ];
 
-for (const item of cases) {
-  test(`automatic recovery selects ${item.name}`, () => {
-    assert.equal(assessAutomaticRecovery(item.input).decision, item.expected);
+for (const item of advisoryCases) {
+  test(`recovery safety leaves ${item.name} to Gemini`, () => {
+    assert.deepEqual(assessRecoverySafety(item.input), { allowed: true, reasons: [] });
   });
 }
+
+const stopCases: Array<{ name: string; input: AutomaticRecoveryInput; reason: RegExp }> = [
+  {
+    name: "new swelling",
+    input: { ...baseline(), readiness: { ...baseline().readiness, hasNewSwelling: true } },
+    reason: /отёк/i,
+  },
+  { name: "active illness", input: { ...baseline(), illnessActive: true }, reason: /болезнь/i },
+  { name: "severe pain", input: { ...baseline(), readiness: { ...baseline().readiness, pain: 7 } }, reason: /боль/i },
+];
+
+for (const item of stopCases) {
+  test(`recovery safety stops for ${item.name}`, () => {
+    const result = assessRecoverySafety(item.input);
+    assert.equal(result.allowed, false);
+    assert.match(result.reasons.join(" "), item.reason);
+  });
+}
+
+test("compact recovery context gives Gemini facts instead of a code decision", () => {
+  const context = compactRecoveryContext({
+    ...baseline(),
+    postIllnessPhase: 1,
+    completedHardWeeks: 5,
+    consecutivePerformanceDeclines: 2,
+    recentCheckins: [{ effort: 9, rir: 0, wellbeing: 2, painReported: false, techniqueStable: true }],
+  });
+
+  assert.match(context, /после болезни: этап 1/i);
+  assert.match(context, /тяжёлых недель: 5/i);
+  assert.match(context, /снижений результата подряд: 2/i);
+  assert.doesNotMatch(context, /решение кода/i);
+});
 
 const generatedWorkout = (): GeneratedWorkout => ({
   title: "План Gemini",

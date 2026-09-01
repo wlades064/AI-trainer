@@ -1,9 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { buildWorkoutPrompt, generateWorkout, validateGeneratedWorkout } from "../src/gemini.ts";
+import { buildWorkoutPrompt, generateWorkout, validateGeneratedWorkout, validateWorkoutGeneration } from "../src/gemini.ts";
 
 const allowed = [{ id: 1, name: "Жим лёжа", riskTags: [] }];
 const validPlan = {
+  loadMode: "reduced",
+  recoveryRationale: ["Недостаток сна требует облегчённой нагрузки"],
   title: "Грудь",
   warmup: ["Разминка плеч"],
   exercises: [{ name: "Жим лёжа", sets: 3, reps: "8–10", weightGuidance: "умеренный вес", restSeconds: 120, notes: "Без боли" }],
@@ -22,17 +24,25 @@ test("prompt contains only compact structured context", () => {
     restrictions: [],
     recentSummary: "2026-08-26: чекин: тяжесть 8/10, RIR 0, боль: нет",
     selectionGuidance: ["4 основных + 2 дополнительных"],
+    recoveryContext: "сон 5 часов; энергия 2/5; после болезни: нет",
   });
   assert.match(prompt, /Жим лёжа/);
   assert.match(prompt, /90 минут/);
   assert.match(prompt, /4 основных/);
   assert.match(prompt, /RIR 0/);
+  assert.match(prompt, /сон 5 часов/);
+  assert.match(prompt, /normal.*reduced.*deload/i);
 });
 
 test("post-validation rejects a hallucinated exercise", () => {
   const invalid = structuredClone(validPlan);
   invalid.exercises[0].name = "Приседания";
   assert.throws(() => validateGeneratedWorkout(invalid, new Set(["Жим лёжа"])), /недопустимое упражнение/);
+});
+
+test("post-validation rejects an unknown recovery mode", () => {
+  const invalid = { ...validPlan, loadMode: "heroic" };
+  assert.throws(() => validateWorkoutGeneration(invalid, new Set(["Жим лёжа"])), /режим восстановления/i);
 });
 
 test("Gemini generateContent request is stateless and parses structured response", async () => {
@@ -51,9 +61,14 @@ test("Gemini generateContent request is stateless and parses structured response
     emphasis: "верх груди",
     exercises: allowed,
     restrictions: [],
+    recoveryContext: "сон и энергия в норме",
   }, fakeFetch);
   assert.equal("store" in (sentBody ?? {}), false);
   assert.ok(Array.isArray(sentBody?.contents));
   assert.equal(result.workout.exercises[0].name, "Жим лёжа");
+  assert.deepEqual(result.recovery, {
+    decision: "reduced",
+    reasons: ["Недостаток сна требует облегчённой нагрузки"],
+  });
   assert.deepEqual([result.inputTokens, result.outputTokens], [50, 25]);
 });
