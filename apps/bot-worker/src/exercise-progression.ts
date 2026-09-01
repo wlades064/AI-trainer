@@ -64,17 +64,21 @@ export function parseTargetRepRange(value: string | null): { minimum: number; ma
 export function assessExerciseProgression(input: ExerciseProgressionInput): ExerciseProgressionAssessment {
   const actualSets = input.actualSets;
   const actualReps = actualSets.map((set) => set.reps);
-  const recordedBases = new Set(actualSets.map((set) => set.loadBasis));
-  const loadBasis = recordedBases.size === 1 ? actualSets[0]?.loadBasis ?? null : null;
-  const recordedWeights = new Set(actualSets.map((set) => set.weightKg).filter((weight): weight is number => weight !== null));
+  const referenceSets = input.targetSets && input.targetSets > 0 ? actualSets.slice(0, input.targetSets) : actualSets;
+  const recordedBases = new Set(referenceSets.map((set) => set.loadBasis));
+  const loadBasis = recordedBases.size === 1 ? referenceSets[0]?.loadBasis ?? null : null;
+  const recordedWeights = new Set(referenceSets.map((set) => set.weightKg).filter((weight): weight is number => weight !== null));
   const latestWeightKg = recordedWeights.size === 1 ? [...recordedWeights][0] : null;
   const base = { ...input, actualReps, latestWeightKg, loadBasis };
-  if (input.reportStatus === "substituted" && input.replacementName) {
-    return { ...base, decision: "replace_exercise", reason: `в отчёте упражнение заменено на «${input.replacementName}»` };
+  if (input.reportStatus === "substituted") {
+    return input.replacementName
+      ? { ...base, decision: "replace_exercise", reason: `в отчёте упражнение заменено на «${input.replacementName}»` }
+      : { ...base, decision: "hold", reason: "замена не подтверждена" };
   }
   if (input.reportStatus === "skipped") return { ...base, decision: "hold", reason: "упражнение пропущено" };
   if (input.painReported) return { ...base, decision: "reduce_load", reason: "после тренировки указана боль или неприятные ощущения" };
   if (input.techniqueStable === false) return { ...base, decision: "reduce_load", reason: "техника в рабочих подходах была нестабильной" };
+  if (input.reportStatus === "partial") return { ...base, decision: "hold", reason: "упражнение отмечено выполненным частично" };
   if (input.loadMode !== "normal") return {
     ...base,
     decision: "hold",
@@ -87,7 +91,7 @@ export function assessExerciseProgression(input: ExerciseProgressionInput): Exer
   const range = parseTargetRepRange(input.targetReps);
   if (!range || !input.targetSets) return { ...base, decision: "hold", reason: "нет сопоставимого целевого диапазона плана" };
   if (actualReps.length < input.targetSets) return { ...base, decision: "hold", reason: `выполнено ${actualReps.length} из ${input.targetSets} рабочих подходов` };
-  const comparedSets = actualSets.slice(0, input.targetSets);
+  const comparedSets = referenceSets;
   const loadBases = new Set(comparedSets.map((set) => set.loadBasis));
   if (loadBases.size !== 1 || loadBases.has("unknown")) {
     return { ...base, decision: "hold", reason: "рабочие подходы имеют несопоставимый или неизвестный тип учёта веса" };

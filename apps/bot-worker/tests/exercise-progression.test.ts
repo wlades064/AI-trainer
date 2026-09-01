@@ -55,6 +55,13 @@ test("RIR zero, missing technique and incomplete volume block load progression",
   assert.match(assessExerciseProgression({ ...base, lastSetRir: 0 }).reason, /RIR 0/);
   assert.equal(assessExerciseProgression({ ...base, techniqueStable: null }).decision, "hold");
   assert.equal(assessExerciseProgression({ ...base, actualSets: base.actualSets.slice(0, 3) }).decision, "hold");
+  assert.equal(assessExerciseProgression({ ...base, reportStatus: "partial" }).decision, "hold");
+});
+
+test("a substituted report without a confirmed replacement fails closed", () => {
+  const assessment = assessExerciseProgression({ ...base, reportStatus: "substituted", replacementName: null });
+  assert.equal(assessment.decision, "hold");
+  assert.match(assessment.reason, /замена не подтверждена/i);
 });
 
 test("pain, unstable technique and deload never authorize a load increase", () => {
@@ -70,6 +77,17 @@ test("mixed working weights or load bases cannot prove progression", () => {
 
   assert.equal(assessExerciseProgression({ ...base, actualSets: mixedWeight }).decision, "hold");
   assert.equal(assessExerciseProgression({ ...base, actualSets: mixedBasis }).decision, "hold");
+});
+
+test("extra working sets do not replace the confirmed base of the target sets", () => {
+  const assessment = assessExerciseProgression({
+    ...base,
+    actualSets: [...base.actualSets, { reps: 12, weightKg: 40, loadBasis: "machine_display" }],
+  });
+
+  assert.equal(assessment.decision, "increase_load");
+  assert.equal(assessment.latestWeightKg, 50);
+  assert.match(progressionWeightGuidance(assessment), /50 кг/);
 });
 
 test("bodyweight and added-weight sets are compared as different loads", () => {
