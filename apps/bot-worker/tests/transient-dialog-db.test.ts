@@ -17,6 +17,9 @@ import { deliverReplyWithTransientCleanup } from "../src/transient-dialog-delive
 function sqliteD1(database: DatabaseSync): D1Database {
   return {
     prepare(query: string): D1PreparedStatement {
+      if ((query.match(/\bUNION ALL\b/g) ?? []).length >= 4) {
+        throw new Error("D1_ERROR: too many terms in compound SELECT: SQLITE_ERROR");
+      }
       let values: SQLInputValue[] = [];
       return {
         bind(...bound: unknown[]) { values = bound as SQLInputValue[]; return this; },
@@ -50,6 +53,11 @@ test("active transient dialogs use stable flow keys and exclude workout report d
 
   assert.deepEqual(dialogs.map((item) => item.flowType), ["readiness", "measurement"]);
   assert.ok(dialogs.every((item) => item.dialogKey === `${item.flowType}:${item.flowId}`));
+  const batched: D1Database = {
+    ...db,
+    batch: async <T>(statements: D1PreparedStatement[]) => Promise.all(statements.map((statement) => statement.all<T>())),
+  };
+  assert.deepEqual(await loadActiveTransientDialogs(batched, 1), dialogs);
   database.close();
 });
 

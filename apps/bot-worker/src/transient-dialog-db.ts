@@ -4,6 +4,7 @@ import type { ActiveTransientDialog, TransientFlowType } from "./transient-dialo
 interface ActiveDialogRow {
   flow_type: TransientFlowType;
   flow_id: number;
+  priority: number;
 }
 
 interface TransientMessageRow {
@@ -28,39 +29,39 @@ export async function loadActiveTransientDialogs(
   db: D1Database,
   userId: number,
 ): Promise<ActiveTransientDialog[]> {
-  const rows = await db.prepare(`
-    SELECT flow_type, flow_id FROM (
-      SELECT 'post_workout_checkin' AS flow_type, id AS flow_id, 10 AS priority
-        FROM post_workout_checkins WHERE user_id=? AND status='pending' AND expires_at>CURRENT_TIMESTAMP
-      UNION ALL SELECT 'readiness', id, 20
-        FROM readiness_conversations WHERE user_id=? AND status='pending' AND expires_at>CURRENT_TIMESTAMP
-      UNION ALL SELECT 'nutrition', id, 30
-        FROM nutrition_import_drafts WHERE user_id=? AND status='pending' AND expires_at>CURRENT_TIMESTAMP
-      UNION ALL SELECT 'nutrition_csv', id, 40
-        FROM nutrition_csv_drafts WHERE user_id=? AND status='pending' AND expires_at>CURRENT_TIMESTAMP
-      UNION ALL SELECT 'lab_image', id, 50
-        FROM lab_import_drafts WHERE user_id=? AND status='pending' AND expires_at>CURRENT_TIMESTAMP
-      UNION ALL SELECT 'measurement', id, 60
-        FROM measurement_conversations WHERE user_id=? AND status='pending' AND expires_at>CURRENT_TIMESTAMP
-      UNION ALL SELECT 'recovery', id, 70
-        FROM recovery_conversations WHERE user_id=? AND status='pending' AND expires_at>CURRENT_TIMESTAMP
-      UNION ALL SELECT 'illness', id, 80
-        FROM illness_conversations WHERE user_id=? AND status='pending' AND expires_at>CURRENT_TIMESTAMP
-      UNION ALL SELECT 'injury', id, 90
-        FROM injury_conversations WHERE user_id=? AND status='pending' AND expires_at>CURRENT_TIMESTAMP
-      UNION ALL SELECT 'reintroduction', id, 100
-        FROM reintroduction_conversations WHERE user_id=? AND status='pending' AND expires_at>CURRENT_TIMESTAMP
-      UNION ALL SELECT 'exercise_catalog', id, 110
-        FROM exercise_catalog_conversations WHERE user_id=? AND status='pending' AND expires_at>CURRENT_TIMESTAMP
-      UNION ALL SELECT 'exercise_add', id, 120
-        FROM exercise_add_conversations WHERE user_id=? AND status='pending' AND expires_at>CURRENT_TIMESTAMP
-      UNION ALL SELECT 'schedule', id, 130
-        FROM schedule_conversations WHERE user_id=? AND status='pending' AND expires_at>CURRENT_TIMESTAMP
-      UNION ALL SELECT 'reminder', id, 140
-        FROM reminder_conversations WHERE user_id=? AND status='pending' AND expires_at>CURRENT_TIMESTAMP
-    ) ORDER BY priority, flow_id DESC
-  `).bind(...Array.from({ length: 14 }, () => userId)).all<ActiveDialogRow>();
-  return (rows.results ?? []).map((row) => ({
+  const flows = [
+    ["post_workout_checkin", "post_workout_checkins"],
+    ["readiness", "readiness_conversations"],
+    ["nutrition", "nutrition_import_drafts"],
+    ["nutrition_csv", "nutrition_csv_drafts"],
+    ["lab_image", "lab_import_drafts"],
+    ["measurement", "measurement_conversations"],
+    ["recovery", "recovery_conversations"],
+    ["illness", "illness_conversations"],
+    ["injury", "injury_conversations"],
+    ["reintroduction", "reintroduction_conversations"],
+    ["exercise_catalog", "exercise_catalog_conversations"],
+    ["exercise_add", "exercise_add_conversations"],
+    ["schedule", "schedule_conversations"],
+    ["reminder", "reminder_conversations"],
+  ] as const;
+  // Production D1 rejects a single compound SELECT over all fourteen flows.
+  // Only fixed internal identifiers are interpolated; owner values stay bound.
+  const statements = [];
+  for (let offset = 0; offset < flows.length; offset += 4) {
+    const group = flows.slice(offset, offset + 4);
+    const sql = group.map(([flow, table], index) =>
+      `SELECT '${flow}' AS flow_type, id AS flow_id, ${offset + index} AS priority
+       FROM ${table} WHERE user_id=? AND status='pending' AND expires_at>CURRENT_TIMESTAMP`
+    ).join(" UNION ALL ");
+    statements.push(db.prepare(sql).bind(...group.map(() => userId)));
+  }
+  const results = db.batch
+    ? await db.batch<ActiveDialogRow>(statements)
+    : await Promise.all(statements.map((statement) => statement.all<ActiveDialogRow>()));
+  const rows = results.flatMap((result) => result.results ?? []);
+  rows.sort((a, b) => a.priority - b.priority || b.flow_id - a.flow_id);
+  return rows.map((row) => ({
     flowType: row.flow_type,
     flowId: row.flow_id,
     dialogKey: `${row.flow_type}:${row.flow_id}`,

@@ -42,11 +42,15 @@ function seedCachedWorkout(sqlite: DatabaseSync): string {
   return today;
 }
 
-async function sendText(db: D1Database, updateId: number, text: string, geminiResponse?: unknown): Promise<string> {
+async function sendText(db: D1Database, updateId: number, text: string, geminiResponse?: unknown, deletedBatches?: number[][]): Promise<string> {
   const originalFetch = globalThis.fetch;
   let sentText = "";
   globalThis.fetch = async (input, init) => {
     const url = String(input);
+    if (url.startsWith("https://api.telegram.org/") && url.endsWith("/deleteMessages")) {
+      deletedBatches?.push(JSON.parse(String(init?.body)).message_ids);
+      return Response.json({ ok: true, result: true });
+    }
     if (url.includes("generativelanguage.googleapis.com")) {
       if (!geminiResponse) throw new Error(`Unexpected external request: ${url}`);
       return Response.json({
@@ -96,6 +100,19 @@ test("menu opens buttons with a short illness hint instead of obsolete commands"
     assert.match(reply, /выздоровел/);
     assert.ok(reply.length < 200);
     assert.doesNotMatch(reply, /\/tomorrow|\/progression|\/schedule|\/recovery|\/status|\/help/);
+    assert.equal(sqlite.prepare("SELECT COUNT(*) AS count FROM illness_episodes").get()!.count, 0);
+  } finally { sqlite.close(); }
+});
+
+test("illness button followed by cancel closes the dialog and deletes its messages", async () => {
+  const { db, sqlite } = testDatabase();
+  const deleted: number[][] = [];
+  try {
+    assert.match(await sendText(db, 511, "🤒 Болезнь"), /заболел.*выздоровел/);
+    await sendText(db, 512, "❌ Отмена", undefined, deleted);
+    assert.deepEqual(deleted.flat().sort((a, b) => a - b), [511, 512, 1511, 1512]);
+    assert.equal(sqlite.prepare("SELECT status FROM illness_conversations").get()!.status, "cancelled");
+    assert.equal(sqlite.prepare("SELECT COUNT(*) AS count FROM transient_dialog_messages").get()!.count, 0);
     assert.equal(sqlite.prepare("SELECT COUNT(*) AS count FROM illness_episodes").get()!.count, 0);
   } finally { sqlite.close(); }
 });

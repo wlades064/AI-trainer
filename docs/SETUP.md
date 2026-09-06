@@ -72,6 +72,7 @@ pnpm exec wrangler deploy
 ```
 
 После deploy URL Worker регистрируется в Telegram как webhook с путём `/telegram/webhook` и тем же `TELEGRAM_WEBHOOK_SECRET`.
+В `setWebhook` обязательно передавать `allowed_updates: ["message", "callback_query"]`: иначе inline-кнопки замеров и возврата упражнений не дойдут до Worker. При обновлении сохранять ожидающие события (`drop_pending_updates: false`). Проверять `getWebhookInfo`: типы событий, очередь и последнюю ошибку; `/health` не проверяет обработчик команд и БД.
 
 ## 5. Что ещё не включено
 
