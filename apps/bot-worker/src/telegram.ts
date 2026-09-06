@@ -1,3 +1,5 @@
+import { MAIN_MENU_MARKUP } from "./menu.ts";
+
 export interface TelegramMessage {
   message_id: number;
   from?: { id: number };
@@ -34,7 +36,7 @@ export async function sendTelegramMessage(
   token: string,
   chatId: number,
   text: string,
-  replyMarkup?: unknown,
+  replyMarkup: unknown = MAIN_MENU_MARKUP,
   fetchImpl: typeof fetch = fetch,
 ): Promise<number> {
   const response = await fetchImpl(`https://api.telegram.org/bot${token}/sendMessage`, {

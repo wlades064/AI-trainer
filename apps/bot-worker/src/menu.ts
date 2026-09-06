@@ -1,3 +1,8 @@
+export const MENU_INTRO = "Выбери действие на кнопках ниже. Чтобы отметить выздоровление: «🤒 Болезнь» → напиши «выздоровел».";
+
+// The native Telegram menu opens commands, not the reply keyboard.
+export const TELEGRAM_MENU_COMMANDS = [{ command: "menu", description: "Показать кнопки" }] as const;
+
 export const MENU_COMMANDS: Readonly<Record<string, string>> = {
   "🏋️ Сегодня": "/today",
   "❌ Отмена": "/cancel",

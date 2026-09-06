@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { MAIN_MENU_MARKUP, MEASUREMENT_MENU_MARKUP } from "../src/menu.ts";
 import { answerTelegramCallbackQuery, deleteTelegramMessages, sendTelegramMessage } from "../src/telegram.ts";
 
 test("sendMessage returns the Telegram message id for later cleanup", async () => {
@@ -8,6 +9,17 @@ test("sendMessage returns the Telegram message id for later cleanup", async () =
   const messageId = await sendTelegramMessage("secret-token", 123, "Вопрос", undefined, fakeFetch);
 
   assert.equal(messageId, 321);
+});
+
+test("ordinary replies restore the current keyboard while inline submenus stay intact", async () => {
+  const markups: unknown[] = [];
+  const fakeFetch: typeof fetch = async (_input, init) => {
+    markups.push(JSON.parse(String(init?.body)).reply_markup);
+    return Response.json({ ok: true, result: { message_id: 321 } });
+  };
+  await sendTelegramMessage("test-token", 123, "Ответ", undefined, fakeFetch);
+  await sendTelegramMessage("test-token", 123, "Замеры", MEASUREMENT_MENU_MARKUP, fakeFetch);
+  assert.deepEqual(markups, [MAIN_MENU_MARKUP, MEASUREMENT_MENU_MARKUP]);
 });
 
 test("deleteMessages removes duplicates and sends no more than 100 ids per request", async () => {

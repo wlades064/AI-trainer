@@ -88,6 +88,18 @@ async function sendText(db: D1Database, updateId: number, text: string, geminiRe
   }
 }
 
+test("menu opens buttons with a short illness hint instead of obsolete commands", async () => {
+  const { db, sqlite } = testDatabase();
+  try {
+    const reply = await sendText(db, 500, "/menu");
+    assert.match(reply, /🤒 Болезнь/);
+    assert.match(reply, /выздоровел/);
+    assert.ok(reply.length < 200);
+    assert.doesNotMatch(reply, /\/tomorrow|\/progression|\/schedule|\/recovery|\/status|\/help/);
+    assert.equal(sqlite.prepare("SELECT COUNT(*) AS count FROM illness_episodes").get()!.count, 0);
+  } finally { sqlite.close(); }
+});
+
 test("webhook rejects tomorrow before creating a user or calling an external generator", async () => {
   const { db, sqlite } = testDatabase();
 

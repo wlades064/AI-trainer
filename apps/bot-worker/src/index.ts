@@ -48,7 +48,7 @@ import { parseWeightCommand } from "./body-tracking.ts";
 import { answerMeasurementConversation, cancelMeasurementConversation, progressSummary, saveEmergencyWeight } from "./body-tracking-db.ts";
 import { goalHelp, GOAL_LABELS, parseGoalCommand } from "./goal.ts";
 import { loadCompactCoachingContext, loadCurrentGoal, setCurrentGoal } from "./goal-db.ts";
-import { commandFromMenuText, MAIN_MENU_MARKUP, MEASUREMENT_MENU_MARKUP } from "./menu.ts";
+import { commandFromMenuText, MAIN_MENU_MARKUP, MEASUREMENT_MENU_MARKUP, MENU_INTRO } from "./menu.ts";
 import { parseStopSupplementCommand, parseSupplementCommand, SUPPLEMENT_HELP } from "./supplements.ts";
 import { addSupplement, listSupplements, stopSupplement } from "./supplements-db.ts";
 import { LAB_HELP, parseCancelLabCommand, parseLabCommand } from "./labs.ts";
@@ -559,7 +559,7 @@ async function handleUpdate(update: TelegramUpdate, env: Env): Promise<Response>
     else reply="Фото обрабатывается только с явной подписью: /nutrition для КБЖУ или /labphoto для лабораторного бланка. Без подписи фото не отправляется в Gemini.";
   } else if (text === "/start" || text === "/help" || text === "/menu") {
     showMenu = true;
-    reply = "Команды: /today — чекин и тренировка на сегодня, /illness — болезнь и возвращение к нагрузке, /program — состояние тренировочного цикла, /progression — паспорт прогрессии упражнений, /schedule — разовые переносы и отмены, /reminders — правило автоматических замеров, /review — итоги за 28 дней, /status — полнота и свежесть данных, /usage — расход и дневной предел Gemini, /export — персональный архив, /goal — текущая цель, /confirm — подтвердить отчёт или КБЖУ, /fatsecret — подпись к пользовательскому CSV, /nutrition — подпись к аварийному скриншоту FatSecret, /weight 87.5 — аварийная запись веса, /measure — месячные замеры, /progress — тело и питание, /strength — силовая динамика, /injuries — травмы, /reintroductions — возврат упражнений, /exercises — каталог, /cancel — отмена текущего диалога. Голосовое сообщение до 2 минут разбирается как фактический отчёт к плану за сегодня или вчера.";
+    reply = MENU_INTRO;
   } else if (text === "/confirm") {
     const user = await ensureUser(env.DB, String(message.from.id), env.APP_TIMEZONE || "Europe/Samara");
     const workoutDraft = await loadPendingReportDraft(env.DB, user.id);
