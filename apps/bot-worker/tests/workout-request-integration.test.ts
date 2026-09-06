@@ -92,15 +92,33 @@ async function sendText(db: D1Database, updateId: number, text: string, geminiRe
   }
 }
 
-test("menu opens buttons with a short illness hint instead of obsolete commands", async () => {
+test("menu deletes its command, replaces itself and disappears after cancel", async () => {
   const { db, sqlite } = testDatabase();
+  const deleted: number[][] = [];
   try {
-    const reply = await sendText(db, 500, "/menu");
-    assert.match(reply, /🤒 Болезнь/);
-    assert.match(reply, /выздоровел/);
-    assert.ok(reply.length < 200);
-    assert.doesNotMatch(reply, /\/tomorrow|\/progression|\/schedule|\/recovery|\/status|\/help/);
+    assert.equal(await sendText(db, 500, "/menu", undefined, deleted), "Меню");
+    assert.deepEqual(deleted.flat(), [500]);
+    await sendText(db, 501, "/menu", undefined, deleted);
+    assert.ok(deleted.flat().includes(1500));
+    await sendText(db, 502, "🤒 Болезнь", undefined, deleted);
+    assert.ok(!deleted.flat().includes(1501));
+    await sendText(db, 503, "❌ Отмена", undefined, deleted);
+    assert.ok(deleted.flat().includes(1501));
+    assert.equal(sqlite.prepare("SELECT COUNT(*) AS count FROM transient_dialog_messages").get()!.count, 0);
     assert.equal(sqlite.prepare("SELECT COUNT(*) AS count FROM illness_episodes").get()!.count, 0);
+  } finally { sqlite.close(); }
+});
+
+test("a completed informational action removes menu but preserves its result", async () => {
+  const { db, sqlite } = testDatabase();
+  const deleted: number[][] = [];
+  try {
+    await sendText(db, 520, "/menu", undefined, deleted);
+    const reply = await sendText(db, 521, "🤖 ИИ-лимит", undefined, deleted);
+    assert.ok(reply.length > 0);
+    assert.ok(deleted.flat().includes(1520));
+    assert.ok(!deleted.flat().includes(1521));
+    assert.equal(sqlite.prepare("SELECT COUNT(*) AS count FROM transient_dialog_messages").get()!.count, 0);
   } finally { sqlite.close(); }
 });
 

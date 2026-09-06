@@ -516,7 +516,10 @@ async function handleCallbackQuery(update: TelegramUpdate, env: Env): Promise<Re
     update.update_id,
   );
   transientPlan.incomingDialogKey = undefined;
-  transientPlan.cleanupDialogKeys = [...new Set([...transientPlan.cleanupDialogKeys, ...orphanedMenuKeys])];
+  transientPlan.cleanupDialogKeys = [...new Set([
+    ...transientPlan.cleanupDialogKeys,
+    ...orphanedMenuKeys.filter((key) => !key.startsWith("main_menu:")),
+  ])];
   try {
     await deleteTelegramMessages(env.TELEGRAM_BOT_TOKEN, message.chat.id, [message.message_id]);
   } catch (error) {
@@ -558,6 +561,7 @@ async function handleUpdate(update: TelegramUpdate, env: Env): Promise<Response>
     else if(/^\/labphoto(?:@\w+)?$/i.test(text))reply=await labPhotoReply(update,env,String(message.from.id));
     else reply="Фото обрабатывается только с явной подписью: /nutrition для КБЖУ или /labphoto для лабораторного бланка. Без подписи фото не отправляется в Gemini.";
   } else if (text === "/start" || text === "/help" || text === "/menu") {
+    await ensureUser(env.DB, telegramUserId, env.APP_TIMEZONE || "Europe/Samara");
     showMenu = true;
     reply = MENU_INTRO;
   } else if (text === "/confirm") {
@@ -756,7 +760,17 @@ async function handleUpdate(update: TelegramUpdate, env: Env): Promise<Response>
     userId,
     transientDialogsAfter.map((dialog) => dialog.dialogKey),
   );
-  transientPlan.cleanupDialogKeys = [...new Set([...transientPlan.cleanupDialogKeys, ...retryableCleanupKeys])];
+  const keepMainMenu = !showMenu && (transientDialogsAfter.length > 0 || text === "/measure");
+  transientPlan.cleanupDialogKeys = [...new Set([
+    ...transientPlan.cleanupDialogKeys,
+    ...retryableCleanupKeys.filter((key) => !keepMainMenu || !key.startsWith("main_menu:")),
+  ])];
+  if (showMenu) {
+    const commandKey = `menu_command:${update.update_id}`;
+    transientPlan.incomingDialogKey = commandKey;
+    transientPlan.outgoingDialogKey = `main_menu:${update.update_id}`;
+    transientPlan.cleanupDialogKeys.push(commandKey);
+  }
   await deliverReplyWithTransientCleanup({
     db: env.DB,
     userId,
