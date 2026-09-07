@@ -1,4 +1,5 @@
 export type TransientFlowType =
+  | "weight"
   | "post_workout_checkin"
   | "readiness"
   | "nutrition"
@@ -27,6 +28,7 @@ export interface TransientDialogMessagePlan {
 }
 
 const FREE_TEXT_ORDER: TransientFlowType[] = [
+  "weight",
   "post_workout_checkin",
   "readiness",
   "illness",
@@ -42,6 +44,7 @@ const FREE_TEXT_ORDER: TransientFlowType[] = [
 
 const CONFIRM_ORDER: TransientFlowType[] = ["nutrition", "nutrition_csv", "lab_image"];
 const CANCEL_ORDER: TransientFlowType[] = [
+  "weight",
   "post_workout_checkin",
   "readiness",
   ...CONFIRM_ORDER,
@@ -73,7 +76,7 @@ function permanentWorkoutCommand(text: string): boolean {
 }
 
 function transientFlowCommand(text: string): boolean {
-  return /^\/(?:cancel|confirm|checkin|ready|measure|recovery|illness|injuries|reintroductions|exercises|schedule|reminders|today|tomorrow)(?:@\w+)?$/i.test(text);
+  return /^\/weight(?:@\w+)?(?:\s|$)/i.test(text) || /^\/(?:cancel|confirm|checkin|ready|measure|recovery|illness|injuries|reintroductions|exercises|schedule|reminders|today|tomorrow)(?:@\w+)?$/i.test(text);
 }
 
 export function planTransientDialogMessages(
@@ -90,7 +93,8 @@ export function planTransientDialogMessages(
     .map((dialog) => dialog.dialogKey);
   const newlyStarted = after.filter((dialog) => !beforeKeys.has(dialog.dialogKey));
 
-  if ((directDataWrite(text) || dataUpload) && newlyStarted.length === 0 && cleanupDialogKeys.length === 0) {
+  const answeringWeight = /^\/weight(?:@\w+)?(?:\s|$)/i.test(text) && before.some((dialog) => dialog.flowType === "weight");
+  if ((directDataWrite(text) || dataUpload) && !answeringWeight && newlyStarted.length === 0 && cleanupDialogKeys.length === 0) {
     const dialogKey = `direct:${updateId}`;
     return { incomingDialogKey: dialogKey, outgoingDialogKey: dialogKey, cleanupDialogKeys: [dialogKey] };
   }

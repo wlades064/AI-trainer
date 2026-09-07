@@ -45,7 +45,7 @@ import { evaluateReadiness } from "./domain/safety.ts";
 import { formatNutritionDraft, parseNutritionScreenshot } from "./nutrition-image.ts";
 import { cancelNutritionDraft, confirmNutritionDraft, findNutritionImage, loadPendingNutritionDraft, saveNutritionDraft } from "./nutrition-db.ts";
 import { parseWeightCommand } from "./body-tracking.ts";
-import { answerMeasurementConversation, cancelMeasurementConversation, progressSummary, saveEmergencyWeight } from "./body-tracking-db.ts";
+import { answerMeasurementConversation, cancelMeasurementConversation, progressSummary, saveEmergencyWeight, startWeightConversation, cancelWeightConversation, completeWeightConversation } from "./body-tracking-db.ts";
 import { goalHelp, GOAL_LABELS, parseGoalCommand } from "./goal.ts";
 import { loadCompactCoachingContext, loadCurrentGoal, setCurrentGoal } from "./goal-db.ts";
 import { commandFromMenuText, MAIN_MENU_MARKUP, MEASUREMENT_MENU_MARKUP, MENU_INTRO } from "./menu.ts";
@@ -549,7 +549,12 @@ async function handleUpdate(update: TelegramUpdate, env: Env): Promise<Response>
   const userIdBefore = await findTelegramUserId(env.DB, telegramUserId);
   const transientDialogsBefore = userIdBefore ? await loadActiveTransientDialogs(env.DB, userIdBefore) : [];
   const originalText = (message.text ?? message.caption ?? "").trim();
-  const text = message.photo?.length||message.document||message.voice ? originalText : commandFromMenuText(originalText);
+  let text = message.photo?.length||message.document||message.voice ? originalText : commandFromMenuText(originalText);
+  const waitingForWeight = transientDialogsBefore.some((dialog) => dialog.flowType === "weight");
+  if (waitingForWeight && message.text && !text.startsWith("/")) text = `/weight ${text}`;
+  if (waitingForWeight && userIdBefore && text.startsWith("/") && !/^\/(?:weight|menu|start|help|cancel)(?:@\w+)?(?:\s|$)/i.test(text)) {
+    await cancelWeightConversation(env.DB, userIdBefore);
+  }
   const offset = requestedDayOffset(text);
   let reply: string;
   let showMenu = false;
@@ -594,7 +599,9 @@ async function handleUpdate(update: TelegramUpdate, env: Env): Promise<Response>
     }
   } else if (text === "/cancel") {
     const user = await ensureUser(env.DB, String(message.from.id), env.APP_TIMEZONE || "Europe/Samara");
-    if (await cancelPostWorkoutCheckin(env.DB, user.id)) {
+    if (await cancelWeightConversation(env.DB, user.id)) {
+      reply = "Ввод веса отменён.";
+    } else if (await cancelPostWorkoutCheckin(env.DB, user.id)) {
       reply = "Послетренировочный чекин отменён. Сама подтверждённая тренировка осталась в истории.";
     } else if (await cancelReadinessConversation(env.DB, user.id)) {
       reply = "Предтренировочный чекин отменён. Тренировка не составлялась.";
@@ -686,14 +693,19 @@ async function handleUpdate(update: TelegramUpdate, env: Env): Promise<Response>
       reply = `Текущая цель обновлена: ${GOAL_LABELS[goal]}. Следующие тренировки будут учитывать её вместе с доступными данными питания и веса.`;
     }
   } else if (/^\/weight(?:@\w+)?(?:\s|$)/i.test(text)) {
+    const user = await ensureUser(env.DB, telegramUserId, env.APP_TIMEZONE || "Europe/Samara");
     const weight = parseWeightCommand(text);
-    if (weight === null) {
-      reply = "Формат: /weight 87.5. Допустимый диапазон — 30–300 кг. Используй команду только как резерв, если импорт из FatSecret недоступен.";
+    if (/^\/weight(?:@\w+)?$/i.test(text)) {
+      reply = transientDialogsBefore.some((dialog) => dialog.flowType !== "weight")
+        ? "Сначала заверши текущий диалог или нажми «❌ Отмена», затем выбери «⚖️ Вес»."
+        : await startWeightConversation(env.DB, user.id);
+    } else if (weight === null) {
+      reply = "Укажи вес числом от 30 до 300 кг, например 78,5.";
     } else {
-      const user = await ensureUser(env.DB, String(message.from.id), env.APP_TIMEZONE || "Europe/Samara");
       const today = toIsoDate(localDateAt(new Date(), env.APP_TIMEZONE || "Europe/Samara"));
       await saveEmergencyWeight(env.DB, user.id, today, weight);
-      reply = `${today}: вес ${weight} кг сохранён как аварийный ввод Telegram.`;
+      await completeWeightConversation(env.DB, user.id);
+      reply = `${today}: вес ${weight} кг сохранён.`;
     }
   } else if (text === "/nutrition") {
     reply = "Пришли один скриншот дневного итога FatSecret и добавь к фотографии подпись /nutrition. Без подписи изображение не отправится в Gemini.";

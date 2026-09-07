@@ -30,6 +30,7 @@ export async function loadActiveTransientDialogs(
   userId: number,
 ): Promise<ActiveTransientDialog[]> {
   const flows = [
+    ["weight", "weight_conversations"],
     ["post_workout_checkin", "post_workout_checkins"],
     ["readiness", "readiness_conversations"],
     ["nutrition", "nutrition_import_drafts"],

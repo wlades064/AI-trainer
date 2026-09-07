@@ -135,6 +135,31 @@ test("illness button followed by cancel closes the dialog and deletes its messag
   } finally { sqlite.close(); }
 });
 
+test("weight button accepts a plain number and cleans up only after saving", async () => {
+  const { db, sqlite } = testDatabase();
+  const deleted: number[][] = [];
+  try {
+    assert.match(await sendText(db, 530, "⚖️ Вес", undefined, deleted), /вес.*кг/i);
+    const reply = await sendText(db, 531, "78", undefined, deleted);
+    assert.match(reply, /78.*сохран/i);
+    assert.equal(sqlite.prepare("SELECT value FROM body_measurements WHERE kind='weight'").get()!.value, 78);
+    assert.deepEqual(deleted.flat().sort((a,b)=>a-b), [530,531,1530,1531]);
+  } finally { sqlite.close(); }
+});
+
+test("weight input validates, supports comma and units, and can be cancelled", async () => {
+  const { db, sqlite } = testDatabase();
+  try {
+    await sendText(db, 540, "⚖️ Вес");
+    assert.match(await sendText(db, 541, "500"), /30.*300/);
+    assert.equal(sqlite.prepare("SELECT COUNT(*) AS count FROM body_measurements").get()!.count, 0);
+    assert.match(await sendText(db, 542, "78,5 кг"), /78.5.*сохран/i);
+    await sendText(db, 543, "⚖️ Вес");
+    assert.match(await sendText(db, 544, "❌ Отмена"), /вес.*отмен/i);
+    assert.equal(sqlite.prepare("SELECT COUNT(*) AS count FROM body_measurements").get()!.count, 1);
+  } finally { sqlite.close(); }
+});
+
 test("webhook rejects tomorrow before creating a user or calling an external generator", async () => {
   const { db, sqlite } = testDatabase();
 

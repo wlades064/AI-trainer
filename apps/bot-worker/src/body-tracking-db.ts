@@ -51,6 +51,24 @@ export async function saveEmergencyWeight(db: D1Database, userId: number, localD
     .bind(userId, localDate, weightKg).run();
 }
 
+export async function startWeightConversation(db: D1Database, userId: number): Promise<string> {
+  await cancelWeightConversation(db, userId);
+  await db.prepare("INSERT INTO weight_conversations(user_id) VALUES (?)").bind(userId).run();
+  return "Укажи вес в кг, например 78 или 78,5. Допустимо 30–300 кг.";
+}
+
+export async function cancelWeightConversation(db: D1Database, userId: number): Promise<boolean> {
+  const pending = await db.prepare("SELECT id FROM weight_conversations WHERE user_id=? AND status='pending' AND expires_at>CURRENT_TIMESTAMP LIMIT 1")
+    .bind(userId).first<{id:number}>();
+  if (!pending) return false;
+  await db.prepare("UPDATE weight_conversations SET status='cancelled' WHERE user_id=? AND status='pending'").bind(userId).run();
+  return true;
+}
+
+export async function completeWeightConversation(db: D1Database, userId: number): Promise<void> {
+  await db.prepare("UPDATE weight_conversations SET status='completed' WHERE user_id=? AND status='pending' AND expires_at>CURRENT_TIMESTAMP").bind(userId).run();
+}
+
 interface MeasurementRow { measured_at: string; kind: string; value: number; unit: string }
 export async function measurementHistory(db: D1Database, userId: number): Promise<string> {
   const kinds = MEASUREMENT_KINDS.map(([kind]) => kind);
