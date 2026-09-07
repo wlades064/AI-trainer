@@ -49,6 +49,7 @@ import { answerMeasurementConversation, cancelMeasurementConversation, progressS
 import { goalHelp, GOAL_LABELS, parseGoalCommand } from "./goal.ts";
 import { loadCompactCoachingContext, loadCurrentGoal, setCurrentGoal } from "./goal-db.ts";
 import { commandFromMenuText, MAIN_MENU_MARKUP, MEASUREMENT_MENU_MARKUP, MENU_INTRO } from "./menu.ts";
+import { INPUT_COMMANDS, INPUT_HINTS, pendingCommandInput, startCommandInput, cancelCommandInput, completeCommandInput, routeCommandInput, validCommandInput, conflictingInput } from "./command-input.ts";
 import { parseStopSupplementCommand, parseSupplementCommand, SUPPLEMENT_HELP } from "./supplements.ts";
 import { addSupplement, listSupplements, stopSupplement } from "./supplements-db.ts";
 import { LAB_HELP, parseCancelLabCommand, parseLabCommand } from "./labs.ts";
@@ -404,6 +405,9 @@ async function freeTextReply(update: TelegramUpdate, env: Env, telegramUserId: s
   const catalogReply=await answerExerciseCatalogConversation(env.DB,user.id,text);if(catalogReply!==null)return catalogReply;
   const exerciseAddReply=await answerExerciseAddConversation(env.DB,user.id,text);if(exerciseAddReply!==null)return exerciseAddReply;
   const scheduleReply=await answerScheduleConversation(env.DB,user.id,text,today);if(scheduleReply!==null)return scheduleReply;
+  if (await loadPendingNutritionDraft(env.DB,user.id) || await pendingNutritionCsv(env.DB,user.id) || await pendingLabImageDraft(env.DB,user.id)) {
+    return "Черновик ждёт подтверждения: проверь данные и отправь /confirm. Для отмены — «❌ Отмена».";
+  }
   return reportReply(update, env, telegramUserId, text);
 }
 
@@ -487,6 +491,10 @@ async function handleCallbackQuery(update: TelegramUpdate, env: Env): Promise<Re
   await answerTelegramCallbackQuery(env.TELEGRAM_BOT_TOKEN, callback.id);
   if (!callback.data?.startsWith("measure:")) return new Response("ok");
   const transientDialogsBefore = await loadActiveTransientDialogs(env.DB, user.id);
+  if (callback.data === "measure:new" && conflictingInput("/measure", transientDialogsBefore)) {
+    await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, message.chat.id, "Сначала заверши текущий диалог или нажми «❌ Отмена», затем выбери замеры.");
+    return new Response("ok");
+  }
   const action = await runMeasurementMenuAction(env.DB, user.id, callback.data);
   if (!action) return new Response("ok");
   const transientDialogsAfter = await loadActiveTransientDialogs(env.DB, user.id);
@@ -550,16 +558,32 @@ async function handleUpdate(update: TelegramUpdate, env: Env): Promise<Response>
   const transientDialogsBefore = userIdBefore ? await loadActiveTransientDialogs(env.DB, userIdBefore) : [];
   const originalText = (message.text ?? message.caption ?? "").trim();
   let text = message.photo?.length||message.document||message.voice ? originalText : commandFromMenuText(originalText);
+  text = text.replace(/^\/(\w+)@\w+(?=\s|$)/, "/$1");
+  const inputConflict = conflictingInput(text, transientDialogsBefore);
+  const inputBefore = userIdBefore ? await pendingCommandInput(env.DB, userIdBefore) : null;
+  let inputError: string | undefined;
+  if (inputBefore && (message.photo?.length || message.document || message.voice) && text.startsWith("/")) {
+    const expected = routeCommandInput(inputBefore.kind,"",message.photo?.length?"photo":message.document?"document":"voice");
+    if (text !== expected) inputError = INPUT_HINTS[inputBefore.kind];
+  }
+  if (inputBefore && !text.startsWith("/")) {
+    const routed = routeCommandInput(inputBefore.kind, text, message.photo?.length ? "photo" : message.document ? "document" : message.voice ? "voice" : "text");
+    if (routed) text = routed;
+    else inputError = INPUT_HINTS[inputBefore.kind];
+  }
   const waitingForWeight = transientDialogsBefore.some((dialog) => dialog.flowType === "weight");
   if (waitingForWeight && message.text && !text.startsWith("/")) text = `/weight ${text}`;
-  if (waitingForWeight && userIdBefore && text.startsWith("/") && !/^\/(?:weight|menu|start|help|cancel)(?:@\w+)?(?:\s|$)/i.test(text)) {
+  if (!inputConflict && waitingForWeight && userIdBefore && text.startsWith("/") && !/^\/(?:weight|menu|start|help|cancel)(?:@\w+)?(?:\s|$)/i.test(text)) {
     await cancelWeightConversation(env.DB, userIdBefore);
   }
   const offset = requestedDayOffset(text);
   let reply: string;
   let showMenu = false;
   let replyMarkup: unknown;
-  if(message.voice){reply=await voiceReportReply(update,env,String(message.from.id));
+  let inputWriteSucceeded = true;
+  if (inputConflict) { reply = "Сначала заверши текущий диалог или нажми «❌ Отмена», затем выбери нужное действие.";
+  } else if (inputError) { reply = inputError;
+  } else if(message.voice){reply=await voiceReportReply(update,env,String(message.from.id));
   } else if(message.document){reply=/^\/fatsecret(?:@\w+)?$/i.test(text)?await nutritionCsvReply(update,env,String(message.from.id)):"CSV обрабатывается только с подписью /fatsecret.";
   } else if (message.photo?.length) {
     if(/^\/nutrition(?:@\w+)?$/i.test(text))reply=await nutritionPhotoReply(update,env,String(message.from.id));
@@ -599,7 +623,9 @@ async function handleUpdate(update: TelegramUpdate, env: Env): Promise<Response>
     }
   } else if (text === "/cancel") {
     const user = await ensureUser(env.DB, String(message.from.id), env.APP_TIMEZONE || "Europe/Samara");
-    if (await cancelWeightConversation(env.DB, user.id)) {
+    if (await cancelCommandInput(env.DB, user.id)) {
+      reply = "Ввод отменён. Данные не изменены.";
+    } else if (await cancelWeightConversation(env.DB, user.id)) {
       reply = "Ввод веса отменён.";
     } else if (await cancelPostWorkoutCheckin(env.DB, user.id)) {
       reply = "Послетренировочный чекин отменён. Сама подтверждённая тренировка осталась в истории.";
@@ -715,14 +741,16 @@ async function handleUpdate(update: TelegramUpdate, env: Env): Promise<Response>
     const user=await ensureUser(env.DB,String(message.from.id),env.APP_TIMEZONE||"Europe/Samara");const rows=await listSupplements(env.DB,user.id);
     reply=`${rows.length?["Активные добавки:",...rows.map((r)=>`${r.id}. ${r.name} — ${r.dose_value} ${r.dose_unit}, ${r.schedule_text}`)].join("\n"):"Активные добавки не записаны."}\n\n${SUPPLEMENT_HELP}`;
   } else if (/^\/supplement_stop(?:@\w+)?(?:\s|$)/i.test(text)) {
-    const id=parseStopSupplementCommand(text);if(id===null)reply=`Неверный формат. ${SUPPLEMENT_HELP}`;else{const user=await ensureUser(env.DB,String(message.from.id),env.APP_TIMEZONE||"Europe/Samara");const today=toIsoDate(localDateAt(new Date(),env.APP_TIMEZONE||"Europe/Samara"));reply=await stopSupplement(env.DB,user.id,id,today)?"Добавка остановлена; история сохранена.":"Активная добавка с таким номером не найдена.";}
+    const id=parseStopSupplementCommand(text);if(id===null)reply=`Неверный формат. ${SUPPLEMENT_HELP}`;else{const user=await ensureUser(env.DB,String(message.from.id),env.APP_TIMEZONE||"Europe/Samara");const today=toIsoDate(localDateAt(new Date(),env.APP_TIMEZONE||"Europe/Samara"));inputWriteSucceeded=await stopSupplement(env.DB,user.id,id,today);reply=inputWriteSucceeded?"Добавка остановлена; история сохранена.":"Активная добавка с таким номером не найдена. Укажи другой номер.";}
   } else if (/^\/supplement(?:@\w+)?(?:\s|$)/i.test(text)) {
     const input=parseSupplementCommand(text);if(!input)reply=`Неверный формат. ${SUPPLEMENT_HELP}`;else{const user=await ensureUser(env.DB,String(message.from.id),env.APP_TIMEZONE||"Europe/Samara");const today=toIsoDate(localDateAt(new Date(),env.APP_TIMEZONE||"Europe/Samara"));await addSupplement(env.DB,user.id,input,today);reply=`Сохранено: ${input.name} — ${input.doseValue} ${input.doseUnit}, ${input.schedule}. Я фиксирую факт приёма, но не меняю назначения и дозировки.`;}
+  } else if (text === "/labphoto") {
+    reply = INPUT_HINTS.lab;
   } else if (text === "/labs") {
     const user=await ensureUser(env.DB,String(message.from.id),env.APP_TIMEZONE||"Europe/Samara");const rows=await listLabResults(env.DB,user.id);
     reply=`${rows.length?["Последние анализы:",...rows.map((r)=>`${r.id}. ${r.collected_on} — ${r.marker_name}: ${r.value_text} ${r.unit} (референс ${r.reference_text})`)].join("\n"):"Анализы пока не записаны."}\n\nФото бланка: добавь к фотографии подпись /labphoto.\n${LAB_HELP}\n\nБот хранит данные, но не ставит диагноз и не меняет назначения.`;
   } else if (/^\/lab_cancel(?:@\w+)?(?:\s|$)/i.test(text)) {
-    const id=parseCancelLabCommand(text);if(id===null)reply=`Неверный формат. ${LAB_HELP}`;else{const user=await ensureUser(env.DB,String(message.from.id),env.APP_TIMEZONE||"Europe/Samara");reply=await cancelLabResult(env.DB,user.id,id)?"Ошибочная запись анализа отменена; она исключена из активного списка, история сохранена.":"Активная запись с таким номером не найдена.";}
+    const id=parseCancelLabCommand(text);if(id===null)reply=`Неверный формат. ${LAB_HELP}`;else{const user=await ensureUser(env.DB,String(message.from.id),env.APP_TIMEZONE||"Europe/Samara");inputWriteSucceeded=await cancelLabResult(env.DB,user.id,id);reply=inputWriteSucceeded?"Ошибочная запись анализа отменена; она исключена из активного списка, история сохранена.":"Активная запись с таким номером не найдена. Укажи другой номер.";}
   } else if (/^\/lab(?:@\w+)?(?:\s|$)/i.test(text)) {
     const input=parseLabCommand(text);if(!input)reply=`Неверный формат. ${LAB_HELP}`;else{const user=await ensureUser(env.DB,String(message.from.id),env.APP_TIMEZONE||"Europe/Samara");const today=toIsoDate(localDateAt(new Date(),env.APP_TIMEZONE||"Europe/Samara"));await addLabResult(env.DB,user.id,input,today);reply=`Сохранено: ${input.marker} — ${input.valueText} ${input.unit}, лабораторный референс ${input.reference}, дата ${input.date??today}. Медицинская интерпретация не выполнялась.`;}
   } else if (offset !== null) {
@@ -735,6 +763,20 @@ async function handleUpdate(update: TelegramUpdate, env: Env): Promise<Response>
     });
   } else {
     reply = await freeTextReply(update, env, String(message.from.id), text);
+  }
+  const openingInput = !message.photo?.length && !message.document && !message.voice ? INPUT_COMMANDS[text] : undefined;
+  if (openingInput && !inputConflict) {
+    const user = await ensureUser(env.DB, telegramUserId, env.APP_TIMEZONE || "Europe/Samara");
+    await startCommandInput(env.DB, user.id, openingInput);
+    reply = ["/goal", "/supplements", "/labs", "/export"].includes(text)
+      ? `${reply.split("\n\n")[0]}\n\n${INPUT_HINTS[openingInput]}`
+      : INPUT_HINTS[openingInput];
+  }
+  if (inputBefore && userIdBefore && !inputConflict && !inputError) {
+    const draftReady = message.photo?.length
+      ? (inputBefore.kind === "nutrition" ? await loadPendingNutritionDraft(env.DB,userIdBefore) : inputBefore.kind === "lab" ? await pendingLabImageDraft(env.DB,userIdBefore) : null)
+      : message.document && inputBefore.kind === "fatsecret" ? await pendingNutritionCsv(env.DB,userIdBefore) : null;
+    if ((inputWriteSucceeded && validCommandInput(inputBefore.kind,text)) || draftReady) await completeCommandInput(env.DB,userIdBefore,inputBefore.id);
   }
   const userId = userIdBefore ?? await findTelegramUserId(env.DB, telegramUserId);
   if (!userId) {
@@ -762,6 +804,7 @@ async function handleUpdate(update: TelegramUpdate, env: Env): Promise<Response>
     update.update_id,
     isDataUpload,
   );
+  if (inputBefore?.kind === "export" && text === "/export_confirm") transientPlan.outgoingDialogKey = undefined;
   if (text === "/measure" && !transientPlan.incomingDialogKey && !transientPlan.outgoingDialogKey) {
     const dialogKey = `measurement_menu:${update.update_id}`;
     transientPlan.incomingDialogKey = dialogKey;

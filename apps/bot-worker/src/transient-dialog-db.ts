@@ -30,6 +30,7 @@ export async function loadActiveTransientDialogs(
   userId: number,
 ): Promise<ActiveTransientDialog[]> {
   const flows = [
+    ["command_input", "command_input_conversations"],
     ["weight", "weight_conversations"],
     ["post_workout_checkin", "post_workout_checkins"],
     ["readiness", "readiness_conversations"],
@@ -46,7 +47,7 @@ export async function loadActiveTransientDialogs(
     ["schedule", "schedule_conversations"],
     ["reminder", "reminder_conversations"],
   ] as const;
-  // Production D1 rejects a single compound SELECT over all fourteen flows.
+  // Production D1 rejects a single compound SELECT over all flows.
   // Only fixed internal identifiers are interpolated; owner values stay bound.
   const statements = [];
   for (let offset = 0; offset < flows.length; offset += 4) {

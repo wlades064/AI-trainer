@@ -42,11 +42,16 @@ function seedCachedWorkout(sqlite: DatabaseSync): string {
   return today;
 }
 
-async function sendText(db: D1Database, updateId: number, text: string, geminiResponse?: unknown, deletedBatches?: number[][]): Promise<string> {
+async function sendText(db: D1Database, updateId: number, text: string, geminiResponse?: unknown, deletedBatches?: number[][], media: Partial<import('../src/telegram.ts').TelegramMessage> = {}): Promise<string> {
   const originalFetch = globalThis.fetch;
   let sentText = "";
   globalThis.fetch = async (input, init) => {
     const url = String(input);
+    if (url.endsWith('/sendDocument')) return Response.json({ok:true,result:{message_id:updateId+2000}});
+    if ((media.photo || media.document) && url.includes('/getFile')) return Response.json({ok:true,result:{file_path:'fixture.jpg'}});
+    if ((media.photo || media.document) && url.includes('/file/bot')) return new Response(media.document
+      ? 'Date,Calories,Fat,Carbs,Protein\n2026-09-07,2000,70,230,110\n'
+      : new Uint8Array([255,216,255,217]), {headers:{'content-type':media.document?'text/csv':'image/jpeg'}});
     if (url.startsWith("https://api.telegram.org/") && url.endsWith("/deleteMessages")) {
       deletedBatches?.push(JSON.parse(String(init?.body)).message_ids);
       return Response.json({ ok: true, result: true });
@@ -73,7 +78,7 @@ async function sendText(db: D1Database, updateId: number, text: string, geminiRe
       },
       body: JSON.stringify({
         update_id: updateId,
-        message: { message_id: updateId, from: { id: 123 }, chat: { id: 123 }, text },
+        message: { message_id: updateId, from: { id: 123 }, chat: { id: 123 }, text, ...media },
       }),
     });
     const response = await worker.fetch(request, {
@@ -158,6 +163,98 @@ test("weight input validates, supports comma and units, and can be cancelled", a
     assert.match(await sendText(db, 544, "❌ Отмена"), /вес.*отмен/i);
     assert.equal(sqlite.prepare("SELECT COUNT(*) AS count FROM body_measurements").get()!.count, 1);
   } finally { sqlite.close(); }
+});
+
+for (const [button, answer, table] of [
+  ["🎯 Цель", "рекомпозиция", "goal_periods"],
+  ["💊 Добавки", "Креатин | 5 г | ежедневно", "supplements"],
+  ["🧪 Анализы", "Гемоглобин | 150 | г/л | 130–170", "lab_results"],
+] as const) {
+  test(`${button} routes an unprefixed answer and removes the completed dialog`, async () => {
+    const { db, sqlite } = testDatabase();
+    const deleted: number[][] = [];
+    try {
+      await sendText(db, 600, button, undefined, deleted);
+      const reply = await sendText(db, 601, answer, undefined, deleted);
+      assert.doesNotMatch(reply, /отправленный план|фактический отчёт/);
+      assert.match(reply, /сохранено|цель обновлена/i);
+      assert.equal(sqlite.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get()!.count, 1);
+      assert.deepEqual(deleted.flat().sort((a,b)=>a-b), [600,601,1600,1601]);
+    } finally { sqlite.close(); }
+  });
+}
+
+for (const [button, draft, table] of [
+  ['🍽 КБЖУ', {date:'2026-09-07',caloriesKcal:2000,proteinG:110,fatG:70,carbohydrateG:230,confidence:1,warnings:[]}, 'nutrition_days'],
+  ['🧪 Анализы', {date:'2026-09-07',laboratory:'test',items:[{marker:'Гемоглобин',valueText:'150',unit:'г/л',reference:'130–170'}],confidence:1,warnings:[]}, 'lab_results'],
+] as const) {
+  test(`${button} accepts an uncaptioned photo only in its input dialog`, async () => {
+    const {db,sqlite}=testDatabase();
+    try {
+      await sendText(db,610,button);
+      assert.doesNotMatch(await sendText(db,611,'это файл'), /отправленный план|фактический отчёт/);
+      const reply=await sendText(db,612,'',draft,undefined,{photo:[{file_id:'photo',file_unique_id:'photo-unique',width:600,height:800}]});
+      assert.match(reply,/черновик/i);
+      assert.equal(sqlite.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get()!.count,0);
+      await sendText(db,613,'/confirm');
+      assert.equal(sqlite.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get()!.count,1);
+    } finally {sqlite.close();}
+  });
+}
+
+test('FatSecret waits for an uncaptioned CSV and preserves explicit confirmation',async()=>{
+  const {db,sqlite}=testDatabase();
+  try {
+    await sendText(db,620,'/fatsecret');
+    const reply=await sendText(db,621,'',undefined,undefined,{document:{file_id:'csv',file_unique_id:'csv-unique',file_name:'food.csv'}});
+    assert.match(reply,/черновик/i);
+    assert.equal(sqlite.prepare('SELECT COUNT(*) AS count FROM nutrition_days').get()!.count,0);
+    await sendText(db,622,'/confirm');
+    assert.equal(sqlite.prepare('SELECT COUNT(*) AS count FROM nutrition_days').get()!.count,1);
+  } finally {sqlite.close();}
+});
+
+test('another input button cannot steal an answer from illness',async()=>{
+  const {db,sqlite}=testDatabase();
+  try {
+    await sendText(db,630,'🤒 Болезнь');
+    assert.match(await sendText(db,631,'🎯 Цель'),/заверши текущий диалог/i);
+    assert.equal(sqlite.prepare('SELECT COUNT(*) AS count FROM command_input_conversations').get()!.count,0);
+    assert.doesNotMatch(await sendText(db,632,'не знаю'),/отправленный план|фактический отчёт/);
+    await sendText(db,633,'❌ Отмена');
+    assert.match(await sendText(db,634,'🎯 Цель'),/напиши цель/i);
+  } finally {sqlite.close();}
+});
+
+for (const button of ['🎯 Цель','💊 Добавки','🧪 Анализы','🍽 КБЖУ','📦 Экспорт','⚖️ Вес','🦴 Травмы','🤒 Болезнь','🧪 Возврат упражнения','⚙️ Упражнения','/fatsecret','/supplement_stop','/lab_cancel','/labphoto']) {
+  test(`${button} keeps an invalid answer in its dialog and supports cancel`,async()=>{
+    const {db,sqlite}=testDatabase();
+    try {
+      await sendText(db,640,button);
+      assert.doesNotMatch(await sendText(db,641,'???'),/отправленный план|фактический отчёт/);
+      assert.doesNotMatch(await sendText(db,642,'❌ Отмена'),/нечего отменять/i);
+      assert.equal(sqlite.prepare('SELECT COUNT(*) AS count FROM transient_dialog_messages').get()!.count,0);
+    } finally {sqlite.close();}
+  });
+}
+for (const button of ['📊 Прогресс','📈 Силовые','🧭 Итоги','🧠 Программа','🤖 ИИ-лимит']) {
+  test(`${button} displays information without opening an input dialog`,async()=>{
+    const {db,sqlite}=testDatabase();
+    try {
+      assert.ok((await sendText(db,650,button)).length>0);
+      assert.equal(sqlite.prepare('SELECT COUNT(*) AS count FROM command_input_conversations').get()!.count,0);
+    } finally {sqlite.close();}
+  });
+}
+test('export requires explicit confirmation and keeps the export result',async()=>{
+  const {db,sqlite}=testDatabase();
+  const deleted:number[][]=[];
+  try {
+    await sendText(db,660,'📦 Экспорт',undefined,deleted);
+    assert.match(await sendText(db,661,'подтверждаю экспорт',undefined,deleted),/экспорт|архив/i);
+    assert.ok(!deleted.flat().includes(1661));
+    assert.equal(sqlite.prepare("SELECT status FROM command_input_conversations").get()!.status,'completed');
+  } finally {sqlite.close();}
 });
 
 test("webhook rejects tomorrow before creating a user or calling an external generator", async () => {

@@ -1,4 +1,5 @@
 export type TransientFlowType =
+  | "command_input"
   | "weight"
   | "post_workout_checkin"
   | "readiness"
@@ -28,6 +29,7 @@ export interface TransientDialogMessagePlan {
 }
 
 const FREE_TEXT_ORDER: TransientFlowType[] = [
+  "command_input",
   "weight",
   "post_workout_checkin",
   "readiness",
@@ -44,6 +46,7 @@ const FREE_TEXT_ORDER: TransientFlowType[] = [
 
 const CONFIRM_ORDER: TransientFlowType[] = ["nutrition", "nutrition_csv", "lab_image"];
 const CANCEL_ORDER: TransientFlowType[] = [
+  "command_input",
   "weight",
   "post_workout_checkin",
   "readiness",
@@ -76,7 +79,7 @@ function permanentWorkoutCommand(text: string): boolean {
 }
 
 function transientFlowCommand(text: string): boolean {
-  return /^\/weight(?:@\w+)?(?:\s|$)/i.test(text) || /^\/(?:cancel|confirm|checkin|ready|measure|recovery|illness|injuries|reintroductions|exercises|schedule|reminders|today|tomorrow)(?:@\w+)?$/i.test(text);
+  return directDataWrite(text) || /^\/(?:weight|goal|supplements|supplement|supplement_stop|labs|lab|lab_cancel|labphoto|nutrition|fatsecret)(?:@\w+)?(?:\s|$)/i.test(text) || /^\/(?:cancel|confirm|checkin|ready|measure|recovery|illness|injuries|reintroductions|exercises|schedule|reminders|today|tomorrow)(?:@\w+)?$/i.test(text);
 }
 
 export function planTransientDialogMessages(
@@ -93,8 +96,8 @@ export function planTransientDialogMessages(
     .map((dialog) => dialog.dialogKey);
   const newlyStarted = after.filter((dialog) => !beforeKeys.has(dialog.dialogKey));
 
-  const answeringWeight = /^\/weight(?:@\w+)?(?:\s|$)/i.test(text) && before.some((dialog) => dialog.flowType === "weight");
-  if ((directDataWrite(text) || dataUpload) && !answeringWeight && newlyStarted.length === 0 && cleanupDialogKeys.length === 0) {
+  const answeringInput = before.some((dialog) => dialog.flowType === "command_input") || /^\/weight(?:@\w+)?(?:\s|$)/i.test(text) && before.some((dialog) => dialog.flowType === "weight");
+  if ((directDataWrite(text) || dataUpload) && !answeringInput && newlyStarted.length === 0 && cleanupDialogKeys.length === 0) {
     const dialogKey = `direct:${updateId}`;
     return { incomingDialogKey: dialogKey, outgoingDialogKey: dialogKey, cleanupDialogKeys: [dialogKey] };
   }
