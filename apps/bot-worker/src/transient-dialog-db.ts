@@ -113,6 +113,9 @@ export async function loadOrphanedTransientDialogKeys(
   activeDialogKeys: string[],
 ): Promise<string[]> {
   const active = new Set(activeDialogKeys);
+  const reports = await db.prepare(`SELECT id FROM workout_report_drafts WHERE user_id=? AND status='pending'
+    AND (expires_at IS NULL OR expires_at>CURRENT_TIMESTAMP)`).bind(userId).all<{id:number}>();
+  for (const report of reports.results ?? []) active.add(`report_confirmation:${report.id}`);
   const rows = await db.prepare(`SELECT dialog_key
     FROM transient_dialog_messages
     WHERE user_id=?

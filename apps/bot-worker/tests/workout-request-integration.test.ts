@@ -257,6 +257,35 @@ test('export requires explicit confirmation and keeps the export result',async()
   } finally {sqlite.close();}
 });
 
+for (const blocked of [false,true]) {
+  test(`workout confirmation cleanup preserves the original report (blocked=${blocked})`,async()=>{
+    const {db,sqlite}=testDatabase();
+    const deleted:number[][]=[];
+    try {
+      const today=seedCachedWorkout(sqlite);
+      const plan={...JSON.parse(cachedWorkout),exercises:[{name:'Жим Свенда',sets:3,reps:'12',restSeconds:60,weightGuidance:'5 кг',notes:''}]};
+      sqlite.prepare("INSERT INTO exercises(name,muscle_group)VALUES('Жим Свенда','chest')").run();
+      sqlite.prepare('UPDATE workout_plans SET generated_json=?').run(JSON.stringify(plan));
+      assert.match(await sendText(db,700,`${today}\n1. Жим Свенда\n3 подх. × 12\nВес: 5 кг`,undefined,deleted),/Черновик тренировки/);
+      await sendText(db,701,'/menu',undefined,deleted);
+      assert.ok(!deleted.flat().includes(1700));
+      if(blocked)sqlite.prepare("UPDATE workout_report_drafts SET parsed_json=json_set(parsed_json,'$.missingInformation',json('[\"уточнить вес\"]'))").run();
+      const reply=await sendText(db,702,'/confirm',undefined,deleted);
+      assert.ok(!deleted.flat().includes(700));
+      if(blocked){
+        assert.ok(!deleted.flat().includes(1700));
+        assert.match(reply,/Не удалось/);
+      }else{
+        assert.ok(deleted.flat().includes(1700));
+        assert.ok(deleted.flat().includes(702));
+        assert.ok(!deleted.flat().includes(1702));
+        assert.doesNotMatch(reply,/тренировка подтверждена и сохранена/i);
+        assert.equal(sqlite.prepare('SELECT COUNT(*) AS count FROM workout_sessions WHERE confirmed_at IS NOT NULL').get()!.count,1);
+      }
+    }finally{sqlite.close();}
+  });
+}
+
 test("webhook rejects tomorrow before creating a user or calling an external generator", async () => {
   const { db, sqlite } = testDatabase();
 

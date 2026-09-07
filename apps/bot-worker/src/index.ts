@@ -249,7 +249,7 @@ async function workoutReply(env: Env, telegramUserId: string): Promise<string> {
       progression.assessments,
       new Set(safe.allowed.map((exercise) => exercise.name)),
     );
-    const recoveryGuarded = applyRecoveryLoadGuard(progressionGuarded, loadMode);
+    const recoveryGuarded = applyRecoveryLoadGuard(progressionGuarded, loadMode, progression.assessments);
     const workout = illnessState.phase ? applyPostIllnessSafetyGuard(recoveryGuarded, illnessState.phase) : recoveryGuarded;
     if (testing.length && !workout.exercises.some((exercise) => exercise.name === testing[0].name)) {
       throw new Error("Gemini пропустил обязательное тестируемое упражнение");
@@ -555,6 +555,7 @@ async function handleUpdate(update: TelegramUpdate, env: Env): Promise<Response>
 
   const telegramUserId = String(message.from.id);
   const userIdBefore = await findTelegramUserId(env.DB, telegramUserId);
+  const reportDraftBefore = userIdBefore ? await loadPendingReportDraft(env.DB, userIdBefore) : null;
   const transientDialogsBefore = userIdBefore ? await loadActiveTransientDialogs(env.DB, userIdBefore) : [];
   const originalText = (message.text ?? message.caption ?? "").trim();
   let text = message.photo?.length||message.document||message.voice ? originalText : commandFromMenuText(originalText);
@@ -608,7 +609,7 @@ async function handleUpdate(update: TelegramUpdate, env: Env): Promise<Response>
       const confirmed = await confirmPendingReportDraft(env.DB, user.id);
       try {
         const question = await startPostWorkoutCheckin(env.DB, user.id, confirmed.sessionId);
-        reply = `${confirmed.date}: выполненная тренировка подтверждена и сохранена в истории.\n\n${question}`;
+        reply = question;
       } catch (checkinError) {
         await env.DB.prepare("INSERT INTO system_events(event_type, payload_json) VALUES ('post_workout_checkin_start_failed', ?)")
           .bind(JSON.stringify({ sessionId: confirmed.sessionId, error: checkinError instanceof Error ? checkinError.message : "unknown" }))
@@ -789,6 +790,7 @@ async function handleUpdate(update: TelegramUpdate, env: Env): Promise<Response>
     return new Response("ok");
   }
   const transientDialogsAfter = await loadActiveTransientDialogs(env.DB, userId);
+  const reportDraftAfter = await loadPendingReportDraft(env.DB, userId);
   const completedPostWorkoutCheckin = transientDialogsBefore.find((dialog) =>
     dialog.flowType === "post_workout_checkin"
     && !transientDialogsAfter.some((current) => current.dialogKey === dialog.dialogKey)
@@ -805,6 +807,20 @@ async function handleUpdate(update: TelegramUpdate, env: Env): Promise<Response>
     isDataUpload,
   );
   if (inputBefore?.kind === "export" && text === "/export_confirm") transientPlan.outgoingDialogKey = undefined;
+  if (reportDraftAfter && reportDraftAfter.id !== reportDraftBefore?.id) {
+    transientPlan.incomingDialogKey = undefined;
+    transientPlan.outgoingDialogKey = `report_confirmation:${reportDraftAfter.id}`;
+  }
+  if (reportDraftBefore && (text === "/confirm" || text === "/cancel")) {
+    const key = `report_confirmation:${reportDraftBefore.id}`;
+    transientPlan.incomingDialogKey = key;
+    if (reportDraftAfter?.id === reportDraftBefore.id) {
+      transientPlan.outgoingDialogKey = key;
+    } else {
+      transientPlan.cleanupDialogKeys.push(key);
+      if (!transientPlan.outgoingDialogKey) transientPlan.outgoingDialogKey = key;
+    }
+  }
   if (text === "/measure" && !transientPlan.incomingDialogKey && !transientPlan.outgoingDialogKey) {
     const dialogKey = `measurement_menu:${update.update_id}`;
     transientPlan.incomingDialogKey = dialogKey;
@@ -815,7 +831,7 @@ async function handleUpdate(update: TelegramUpdate, env: Env): Promise<Response>
     userId,
     transientDialogsAfter.map((dialog) => dialog.dialogKey),
   );
-  const keepMainMenu = !showMenu && (transientDialogsAfter.length > 0 || text === "/measure");
+  const keepMainMenu = !showMenu && (transientDialogsAfter.length > 0 || !!reportDraftAfter || text === "/measure");
   transientPlan.cleanupDialogKeys = [...new Set([
     ...transientPlan.cleanupDialogKeys,
     ...retryableCleanupKeys.filter((key) => !keepMainMenu || !key.startsWith("main_menu:")),

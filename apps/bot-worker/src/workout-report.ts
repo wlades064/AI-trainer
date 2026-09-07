@@ -99,7 +99,9 @@ export function parseEditedPlanReport(input: {
     const weightMatch = block.match(/^Вес:[ \t]*(\d+(?:[.,]\d+)?)([^\n]*)$/im);
     const actualName = substitutionName ?? reportedName;
     const actualComparable = comparableExerciseName(actualName);
-    const bodyweight = planned.weightGuidance.toLowerCase().includes("собствен") || actualComparable.includes("подтягиван");
+    const dips = actualComparable.includes("брусь") && !/гравитрон|противовес/.test(actualComparable);
+    const bodyweight = dips || planned.weightGuidance.toLowerCase().includes("собствен") || actualComparable.includes("подтягиван");
+    if (dips && !weightMatch && !/сво[йи]м? вес|собственн|без (?:дополнительного )?(?:веса|отягощения)/i.test(block)) return null;
     if (!bodyweight && !weightMatch) return null;
     const reportedWeight = weightMatch ? Number(weightMatch[1].replace(",", ".")) : undefined;
     const weightUnit = weightMatch?.[2].match(/(кг|килограмм(?:а|ов)?|фунт(?:а|ов)?|lbs?)/i)?.[1].toLowerCase();
@@ -168,7 +170,7 @@ export function reportConfirmationBlockers(report: WorkoutReportDraft): string[]
 
 function setText(set: ReportSet): string {
   const weight = set.loadBasis === "bodyweight"
-    ? "свой вес"
+    ? set.weightKg ? `свой вес + ${set.weightKg} кг` : "свой вес"
     : set.weightKg === undefined
       ? "вес не указан"
       : `${set.weightKg} кг`;
@@ -297,6 +299,7 @@ export function buildWorkoutReportPrompt(input: {
     "Фраза «остальное по плану» означает performedAsPlanned=true, но не разрешает придумывать фактический вес из диапазона.",
     "Не копируй целевые веса и повторения в фактические подходы, если владелец явно не подтвердил выполнение по плану.",
     "Вес гантели записывай как per_dumbbell, вес на одну сторону Хаммера как per_side, цифру на блоке как machine_display.",
+    "Для обычных брусьев и подтягиваний loadBasis=bodyweight, weightKg — только дополнительное отягощение: 20 кг означает свой вес + 20 кг. Не складывай его с массой тела. Если на брусьях не указан ни дополнительный вес, ни явно свой вес, запроси уточнение через missingInformation. Гравитрон и противовес не относятся к этому правилу.",
     "Дроп-сеты возвращай отдельными подходами с setType=drop. Пропущенные упражнения возвращай с пустым sets.",
     "Все неясности перечисли в missingInformation; не подменяй их предположениями.",
   ].join("\n");
@@ -354,6 +357,8 @@ export function validateWorkoutReport(
     for (const set of exercise.sets) {
       if (!Number.isInteger(set.reps) || set.reps < 1 || set.reps > 100) throw new Error("Некорректное число повторений");
       if (set.weightKg !== undefined && (!Number.isFinite(set.weightKg) || set.weightKg < 0 || set.weightKg > 1000)) throw new Error("Некорректный вес");
+      const actualName = exercise.substitutionName ?? exercise.name;
+      if (/брусь|подтягиван/i.test(actualName) && !/гравитрон|противовес/i.test(actualName)) set.loadBasis = "bodyweight";
     }
   }
   if (seen.size !== expected.size) throw new Error("Отчёт содержит не все упражнения плана");

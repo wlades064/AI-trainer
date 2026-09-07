@@ -7,6 +7,7 @@ import {
   type AutomaticRecoveryInput,
 } from "../src/automatic-recovery.ts";
 import type { GeneratedWorkout } from "../src/gemini.ts";
+import { assessExerciseProgression } from "../src/exercise-progression.ts";
 import { applyPostIllnessSafetyGuard } from "../src/illness.ts";
 
 const baseline = (): AutomaticRecoveryInput => ({
@@ -115,7 +116,7 @@ test("reduced guard deterministically caps volume and forbids load increase", ()
 
   assert.equal(guarded.exercises.length, 5);
   assert.ok(guarded.exercises.every((exercise) => exercise.sets <= 3));
-  assert.ok(guarded.exercises.every((exercise) => /не выше последнего подтверждённого/i.test(exercise.weightGuidance)));
+  assert.ok(guarded.exercises.every((exercise) => /Нет сопоставимого подтверждённого/i.test(exercise.weightGuidance)));
   assert.ok(guarded.exercises.every((exercise) => /RIR 2–3/.test(exercise.weightGuidance)));
 });
 
@@ -124,13 +125,24 @@ test("deload guard deterministically caps volume and replaces Gemini load advice
 
   assert.equal(guarded.exercises.length, 4);
   assert.ok(guarded.exercises.every((exercise) => exercise.sets === 3));
-  assert.ok(guarded.exercises.every((exercise) => /80–90%/.test(exercise.weightGuidance)));
+  assert.ok(guarded.exercises.every((exercise) => /Нет сопоставимого подтверждённого/.test(exercise.weightGuidance)));
   assert.ok(guarded.exercises.every((exercise) => /RIR 3–5/.test(exercise.weightGuidance)));
   assert.doesNotMatch(JSON.stringify(guarded), /Повысить вес и работать до отказа/);
 });
 
 test("stop decision cannot produce a workout", () => {
   assert.throws(() => applyRecoveryLoadGuard(generatedWorkout(), "stop"), /остановлена/i);
+});
+
+test('recovery shows confirmed numerical limits and never invents missing weights',()=>{
+  const reference=assessExerciseProgression({focus:'chest',date:'2026-09-07',name:'Упражнение 1',targetSets:3,targetReps:'12',actualSets:[{reps:12,weightKg:40,loadBasis:'per_side'}],reportStatus:'completed',replacementName:null,lastSetRir:2,techniqueStable:true,painReported:false,loadMode:'normal'});
+  const reduced=applyRecoveryLoadGuard(generatedWorkout(),'reduced',[reference]);
+  assert.match(reduced.exercises[0].weightGuidance,/40 кг на сторону/);
+  assert.match(reduced.exercises[1].weightGuidance,/Нет сопоставимого/);
+  const deload=applyRecoveryLoadGuard(generatedWorkout(),'deload',[reference]);
+  assert.match(deload.exercises[0].weightGuidance,/36 кг на сторону/);
+  const bodyweight={...reference,loadBasis:'bodyweight',latestWeightKg:20};
+  assert.match(applyRecoveryLoadGuard(generatedWorkout(),'reduced',[bodyweight]).exercises[0].weightGuidance,/20 кг дополнительно/);
 });
 
 test("post-illness safety guard does not replace the recovery mode chosen by Gemini", () => {

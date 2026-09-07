@@ -25,6 +25,15 @@ const plan = {
   programmingRationale: ["Последовательная прогрессия"],
 };
 
+test('dips use added weight in both the edited report and its preview',()=>{
+  const dipPlan={...plan,exercises:[{...plan.exercises[0],name:'Отжимания на брусьях',weightGuidance:'Не выше последнего веса'}]};
+  const report=parseEditedPlanReport({date:'2026-09-07',plan:dipPlan,reportText:'2026-09-07\n1. Отжимания на брусьях\n3 подх. × 12\nВес: 20 кг'});
+  assert.ok(report);
+  assert.equal(report.exercises[0].sets[0].loadBasis,'bodyweight');
+  assert.equal(report.exercises[0].sets[0].weightKg,20);
+  assert.match(formatWorkoutReportDraft(report),/свой вес \+ 20 кг/);
+});
+
 const validReport: WorkoutReportDraft = {
   date: "2026-08-26",
   exercises: [

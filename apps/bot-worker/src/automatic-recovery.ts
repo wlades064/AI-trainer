@@ -1,4 +1,5 @@
 import type { GeneratedWorkout } from "./gemini.ts";
+import type { ExerciseProgressionAssessment } from "./exercise-progression.ts";
 
 export type RecoveryLoadDecision = "normal" | "reduced" | "deload" | "stop";
 
@@ -69,6 +70,7 @@ export function compactRecoveryContext(input: AutomaticRecoveryInput): string {
 export function applyRecoveryLoadGuard(
   workout: GeneratedWorkout,
   decision: RecoveryLoadDecision,
+  history: ExerciseProgressionAssessment[] = [],
 ): GeneratedWorkout {
   if (decision === "stop") throw new Error("Тренировка остановлена безопасностным решением");
   if (decision === "normal") return workout;
@@ -78,9 +80,7 @@ export function applyRecoveryLoadGuard(
     exercises: workout.exercises.slice(0, reduced ? 5 : 4).map((exercise) => ({
       ...exercise,
       sets: reduced ? Math.min(exercise.sets, 3) : Math.max(1, Math.floor(exercise.sets * 0.6)),
-      weightGuidance: reduced
-        ? "Не выше последнего подтверждённого рабочего веса; оставляй RIR 2–3."
-        : "80–90% последнего подтверждённого рабочего веса; оставляй RIR 3–5.",
+      weightGuidance: recoveryWeightReference(exercise.name, history, reduced),
       notes: reduced
         ? "Контролируемая техника; без отказа, дроп-сетов, форсированных повторений и повышения веса."
         : "Разгрузочное выполнение; без отказа, интенсификаторов, акцентированных негативов и новых сложных упражнений.",
@@ -92,4 +92,17 @@ export function applyRecoveryLoadGuard(
         : "Объём и интенсивность автоматически ограничены кодом на период разгрузки.",
     ],
   };
+}
+
+function recoveryWeightReference(name: string, history: ExerciseProgressionAssessment[], reduced: boolean): string {
+  const value = history.find((item) => item.name === name && item.decision !== "replace_exercise");
+  const rir = reduced ? "2–3" : "3–5";
+  if (!value || !value.loadBasis || value.loadBasis === "unknown") return `Нет сопоставимого подтверждённого веса: начни с лёгкого разминочного подхода; рабочую нагрузку подбирай без отказа и боли, RIR ${rir}.`;
+  if (value.loadBasis === "bodyweight" && !value.latestWeightKg) return `Свой вес, без дополнительного отягощения; RIR ${rir}.`;
+  if (value.latestWeightKg === null) return "Подтверждённый вес не указан: начни с лёгкого разминочного подхода, без отказа и боли.";
+  const base = value.latestWeightKg;
+  const units: Record<string,string> = {per_side:"на сторону",per_dumbbell:"на гантель",machine_display:"по шкале тренажёра",total:"общий вес",bodyweight:"дополнительно к собственному весу"};
+  const roundDown = (weight:number) => Math.floor(weight*10)/10;
+  const cap = reduced && value.decision !== "reduce_load" ? base : roundDown(base*0.9);
+  return `Не выше ${cap} кг ${units[value.loadBasis] ?? ""}; последний подтверждённый вес ${base} кг. Начни легче, округляй нагрузку вниз до доступного шага; RIR ${rir}, без повышения веса.`;
 }
